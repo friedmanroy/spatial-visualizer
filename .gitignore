@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+
+# per-dataset UI choices (custom colors, enabled fields) - regenerated automatically
+cache/
+
+# raw data - only data/pathways.json is tracked
+data/*.h5ad

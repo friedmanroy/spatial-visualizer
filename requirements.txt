@@ -1,0 +1,10 @@
+scanpy==1.12.4
+numpy==2.4.6
+pandas==3.0.6
+scipy==1.18.1
+panel==1.9.4
+bokeh==3.9.2
+matplotlib==3.11.2
+scikit-learn==1.9.1
+h5py==3.16.0
+umap-learn==0.5.12
