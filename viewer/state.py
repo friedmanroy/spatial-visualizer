@@ -26,6 +26,7 @@ class Dataset:
         self._sample_indices: dict[str, np.ndarray] = {}
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
+        self._var_upper_lookup: dict[str, str] | None = None
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
         # None means "no restriction, offer every eligible field"; otherwise only
         # these column names are offered as "color by" options (set on the landing
@@ -69,18 +70,31 @@ class Dataset:
         return self._sample_indices[sample_id]
 
     # -- gene expression -------------------------------------------------------
+    def match_gene(self, gene: str) -> str | None:
+        """Resolves a gene symbol to this dataset's actual var_names spelling,
+        matching case-insensitively so mouse (Col1a1) and human (COL1A1) gene
+        symbol conventions both work regardless of which one a gene list (e.g.
+        pathways.json) happens to be written in."""
+        if gene in self.adata.var_names:
+            return gene
+        if self._var_upper_lookup is None:
+            self._var_upper_lookup = {v.upper(): v for v in self.adata.var_names}
+        return self._var_upper_lookup.get(gene.upper())
+
+
     def gene_values(self, gene: str) -> np.ndarray | None:
         # Index the raw matrix directly (bypassing AnnData's __getitem__, which
         # rebuilds a whole view/obs/var subset just to read one column) - this is
         # what makes repeated single-gene lookups fast on large datasets.
-        if gene not in self.adata.var_names:
+        matched = self.match_gene(gene)
+        if matched is None:
             return None
-        if gene not in self._gene_cache:
-            gene_idx = self.adata.var_names.get_loc(gene)
+        if matched not in self._gene_cache:
+            gene_idx = self.adata.var_names.get_loc(matched)
             col = self.adata.X[:, gene_idx]
             arr = np.asarray(col.todense()).ravel() if sp.issparse(col) else np.asarray(col).ravel()
-            self._gene_cache[gene] = arr
-        return self._gene_cache[gene]
+            self._gene_cache[matched] = arr
+        return self._gene_cache[matched]
 
 
 class AppState:

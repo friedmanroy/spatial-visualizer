@@ -29,7 +29,10 @@ def score_pathway(dataset, pathway_name: str, pathways: dict) -> np.ndarray | No
     info = pathways.get(pathway_name)
     if info is None:
         return None
-    genes = [g for g in info.get("genes", []) if g in dataset.adata.var_names]
+    # Match case-insensitively so mouse-cased pathway gene lists (Col1a1) still
+    # resolve against a human-cased dataset (COL1A1), or vice versa.
+    matched = (dataset.match_gene(g) for g in info.get("genes", []))
+    genes = sorted({g for g in matched if g is not None})
     if len(genes) < 2:
         cache[pathway_name] = None
         return None
