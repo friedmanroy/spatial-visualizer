@@ -34,7 +34,43 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     renderer = fig.circle(
         x="x", y="y", source=source, radius=radius0, fill_color="fill_color", line_width=0, fill_alpha=1.0,
     )
-    spatial_plot.try_background_image(fig, dataset.adata, initial_sample)
+    # Background tissue image: any image found under uns['spatial'], chosen by the user
+    # (layouts vary too much to guess which one, if any, belongs to which sample).
+    bg_images = spatial_plot.find_background_images(dataset.adata)
+    bg_source = ColumnDataSource(data={"image": [], "x": [], "y": [], "dw": [], "dh": []})
+    fig.image_rgba(image="image", x="x", y="y", dw="dw", dh="dh", source=bg_source, level="image")
+    bg_data_cache: dict[tuple[str, str], dict] = {}
+    bg_select = pn.widgets.Select(
+        name="Background image" if bg_images else "Background image (none found in uns['spatial'])",
+        options=["None"] + list(bg_images), value="None", disabled=not bg_images,
+    )
+    bg_orientation = pn.widgets.Select(
+        name="Image orientation", options=list(spatial_plot.IMAGE_ORIENTATIONS),
+        value="As stored", visible=False,
+    )
+
+    def update_bg_image(*events):
+        label = bg_select.value
+        bg_orientation.visible = label in bg_images
+        if label not in bg_images:
+            bg_source.data = {"image": [], "x": [], "y": [], "dw": [], "dh": []}
+            return
+        key = (label, bg_orientation.value)
+        if key not in bg_data_cache:
+            img, scalef = bg_images[label]
+            bg_data_cache[key] = spatial_plot.background_image_data(img, scalef, bg_orientation.value)
+        bg_source.data = bg_data_cache[key]
+
+    bg_select.param.watch(update_bg_image, "value")
+    bg_orientation.param.watch(update_bg_image, "value")
+
+    # Lets a background image show through the (otherwise solid, densely packed) cells.
+    cell_opacity = pn.widgets.FloatSlider(name="Cell opacity", start=0.0, end=1.0, step=0.05, value=1.0)
+
+    def on_opacity_change(event):
+        renderer.glyph.fill_alpha = event.new
+
+    cell_opacity.param.watch(on_opacity_change, "value")
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
 
     sample_select = pn.widgets.Select(name="Sample / FOV", options=list(dataset.sample_ids), value=initial_sample)
@@ -104,6 +140,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         sample_select,
         pn.Row(prev_btn, next_btn),
         count_label,
+        bg_select,
+        bg_orientation,
+        cell_opacity,
         pn.layout.Divider(),
         controls.layout,
         width=380,

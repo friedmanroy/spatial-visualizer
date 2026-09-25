@@ -22,7 +22,26 @@ _CHANNEL_NAME = {"R": "Red", "G": "Green", "B": "Blue"}
 _WIDGET_WIDTH = 300
 #: left inset shared by every top-level row in the sidebar, so fields/buttons/
 #: checkboxes all start flush against the same edge instead of drifting per widget.
-_INSET = 10
+_INSET = 1
+#: Side length (px) of each category's color swatch button, and the vertical space
+#: (px) left between neighbouring swatches in the category list.
+_SWATCH_SIZE = 18
+_SWATCH_GAP = 8
+#: Strips the browser's default frame/padding around a native <input type="color"> so
+#: the chosen color fills the whole swatch button instead of a small inner rectangle.
+#: The explicit size overrides Bokeh's own min-height for inputs, which otherwise keeps
+#: the swatch tall regardless of the widget's `height`.
+_SWATCH_CSS = f"""
+:host {{ height: {_SWATCH_SIZE}px !important; min-height: 0 !important; }}
+input[type="color"] {{
+  padding: 0; border: 1px solid rgba(0, 0, 0, 0.25); border-radius: 4px;
+  width: {_SWATCH_SIZE}px !important; height: {_SWATCH_SIZE}px !important;
+  min-height: 0 !important; cursor: pointer; background: none;
+}}
+input[type="color"]::-webkit-color-swatch-wrapper {{ padding: 0; }}
+input[type="color"]::-webkit-color-swatch {{ border: none; border-radius: 3px; }}
+input[type="color"]::-moz-color-swatch {{ border: none; border-radius: 3px; }}
+"""
 
 
 class ColorControls:
@@ -187,9 +206,13 @@ class ColorControls:
             color = spec.colors.get(cat, GRAY)
             # The swatch itself *is* the color control - clicking it opens the
             # browser's native color wheel, no separate widget needed.
-            picker = pn.widgets.ColorPicker(value=color, name="", width=26, height=26, margin=(3, 8, 3, _INSET))
+            picker = pn.widgets.ColorPicker(
+                value=color, name="", width=_SWATCH_SIZE, height=_SWATCH_SIZE,
+                margin=(_SWATCH_GAP // 2, 8, _SWATCH_GAP // 2, _INSET + 3),
+                stylesheets=[_SWATCH_CSS],
+            )
             picker.param.watch(lambda e, s=spec, f=field, c=cat: self._on_color_change(s, f, c, e.new), "value")
-            cb = pn.widgets.Checkbox(name=cat, value=True, margin=(7, 5, 5, 0))
+            cb = pn.widgets.Checkbox(name=cat, value=True, margin=(_SWATCH_GAP // 2, 5, _SWATCH_GAP // 2, 0))
             cb.param.watch(self._fire, "value")
             rows.append(pn.Row(picker, cb, margin=0))
             self._value_checkboxes[cat] = cb
