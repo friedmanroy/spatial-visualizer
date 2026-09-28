@@ -11,6 +11,17 @@ from bokeh.palettes import Category20_20, Category20b_20, Turbo256, viridis
 GRAY = "#BEBEBE"
 
 
+def _to_rgb_hex(color: str) -> str:
+    """Strip an alpha channel from an 8-digit ``#rrggbbaa`` hex color.
+
+    Panel's ColorPicker only accepts 6-digit RGB hex codes or named colors, but
+    scanpy/matplotlib sometimes store ``*_colors`` with an alpha channel.
+    """
+    if isinstance(color, str) and color.startswith("#") and len(color) == 9:
+        return color[:7]
+    return color
+
+
 def default_categorical_palette(n: int) -> list[str]:
     base = list(Category20_20) + list(Category20b_20)
     if n <= len(base):
@@ -39,7 +50,7 @@ def existing_uns_scheme(adata, colname: str) -> dict[str, str] | None:
     cat_order = [str(c) for c in col.cat.categories]
     if len(raw) != len(cat_order):
         return None
-    return dict(zip(cat_order, raw))
+    return {cat: _to_rgb_hex(color) for cat, color in zip(cat_order, raw)}
 
 
 def assign_categorical_colors(adata, colname: str, categories: list[str]) -> dict[str, str]:
