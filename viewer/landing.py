@@ -11,17 +11,20 @@ import traceback
 import panel as pn
 import scanpy as sc
 
-from . import fields as fields_mod
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .file_picker import build_path_picker
 from .state import Dataset
 
-DEFAULT_PATHWAYS_PATH = "data/pathways.json"
+# Shipped inside the package so it's found however the app was installed/launched.
+# First entry of the sample/FOV dropdown: don't split, treat the whole file as one sample.
+NO_SPLIT = "None (single sample / FOV)"
+
+DEFAULT_PATHWAYS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pathways.json")
 
 
 def build_landing(state, on_ready) -> pn.viewable.Viewable:
-    path_input, path_picker = build_path_picker("Spatial .h5ad path")
+    path_input, _, path_picker = build_path_picker("Spatial .h5ad path")
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
     load_progress = pn.indicators.Progress(
         active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
@@ -29,10 +32,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     status = pn.pane.Markdown("")
 
     sample_col_select = pn.widgets.Select(
-        name="Which obs column separates samples / fields of view?", options=[]
-    )
-    no_split_checkbox = pn.widgets.Checkbox(
-        name="This dataset has only one sample / FOV (don't split)", value=False
+        name="Does an obs column separate samples / fields of view? (leave as None if not)",
+        options=[NO_SPLIT],
     )
     pathways_input = pn.widgets.TextInput(name="pathways.json path (optional)", value="")
 
@@ -47,7 +48,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
 
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
     step2 = pn.Column(
-        sample_col_select, no_split_checkbox, pathways_input, field_picker, open_btn, visible=False
+        sample_col_select, pathways_input, field_picker, open_btn, visible=False
     )
 
     holder = {"dataset": None, "field_checkboxes": {}}
@@ -104,11 +105,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             all_field_options = await asyncio.to_thread(_classify_all_columns)
             cat_options = [c for c in all_field_options if ds.classify(c).kind == "categorical"]
             with pn.io.hold():
-                sample_col_select.options = cat_options
-                guess = fields_mod.guess_sample_column(adata)
-                if guess is not None:
-                    sample_col_select.value = guess
-                no_split_checkbox.value = len(cat_options) == 0
+                sample_col_select.options = [NO_SPLIT] + cat_options
+                cached_sample_col = ds.color_cache.get_sample_column()
+                sample_col_select.value = cached_sample_col if cached_sample_col in cat_options else NO_SPLIT
 
                 cached_enabled = ds.color_cache.get_enabled_fields()
                 field_checkboxes = {}
@@ -134,13 +133,14 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
-        sample_col = None if no_split_checkbox.value else sample_col_select.value
+        sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
         field_checkboxes = holder["field_checkboxes"]
         enabled = {f for f, cb in field_checkboxes.items() if cb.value}
         ds.allowed_fields = enabled if enabled != set(field_checkboxes) else None
         if ds.color_cache is not None:
             ds.color_cache.set_enabled_fields(sorted(enabled))
+            ds.color_cache.set_sample_column(sample_col)
         state.spatial = ds
         state.pathways_path = pathways_input.value.strip()
         state.pathways = pathways_mod.load_pathways(state.pathways_path)

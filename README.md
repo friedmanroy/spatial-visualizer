@@ -19,40 +19,96 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
   from the spatial data itself, with configurable number of PCs and neighbors. Uses scanpy's
   own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
-- **Persistent choices** - custom category colors and which fields are enabled are cached to
-  `cache/` (gitignored) and reloaded automatically the next time you open the same file.
+- **Persistent choices** - custom category colors, which fields are enabled, and the
+  sample/FOV column are cached to
+  `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
 - **Error dialog** - any unexpected error shows a popup with the traceback instead of silently
   freezing the page.
 
-## Requirements
+## Getting started - the easy way (no Python needed)
 
-- Python 3.11+
-- A `pathways.json` file describing gene sets (an example is included at `data/pathways.json`)
+For people who just want to use the app. No Python, no terminal, no admin rights.
 
-## Installation
+1. Unzip the `spatial-visualizer` folder you were sent, and put it wherever you like.
+2. Inside it, double-click:
+   - **Mac:** `Start Spatial Visualizer (Mac).command`
+   - **Windows:** `Start Spatial Visualizer (Windows).bat`
+3. A small text window opens and the app appears in your browser.
+   - The **first launch** downloads everything it needs and can take a few minutes. Later
+     launches are much faster.
+   - Closing the browser tab stops the app.
+
+**First time on a Mac:** macOS may say the file "cannot be opened because it is from an
+unidentified developer". Right-click (or Control-click) the file, choose **Open**, then click
+**Open** again. On newer macOS versions you may instead need to go to
+**System Settings -> Privacy & Security** and click **Open Anyway**. You only need to do this once.
+
+**First time on Windows:** if a blue "Windows protected your PC" box appears, click
+**More info -> Run anyway**. You only need to do this once.
+
+<details>
+<summary>What the launcher actually does</summary>
+
+It installs [uv](https://docs.astral.sh/uv/) into your user folder (once). uv then provides a
+private copy of Python and the required packages. Nothing is installed system-wide, and any
+Python you already have is left untouched.
+
+Which version of the app runs:
+- If the app's GitHub page can be reached, the launcher runs the **latest version** from there,
+  so you get updates automatically.
+- Otherwise (the repository is private, or you're offline), it runs the version **in this folder**.
+
+Saved colors and field choices are kept in the `cache/` folder inside this folder in both
+cases. To keep them when switching to a newer zip, copy `cache/` into the new folder.
+To remove everything: delete this folder, run `uv cache clean`, then delete uv itself (see
+the uv docs).
+</details>
+
+### Sharing the app (maintainers)
+
+Send people a zip of the project. The simplest clean way (only tracked files, so no `venv/`,
+`cache/` or `.h5ad` data, and the Mac launcher stays executable) is:
+
+```bash
+git archive --format=zip --prefix=spatial-visualizer/ -o ~/Desktop/spatial-visualizer.zip HEAD
+```
+
+`git archive` only includes committed changes. Before the repository is public, users run
+the copy in their zip, so to update them you send a new zip. After the repository is public
+(the launchers check `SOURCE`, the `main` branch's zip on GitHub), every launch picks up
+whatever is on `main` automatically. Users don't need to do anything, and they keep using the
+zip they already have. To have users follow a more stable branch instead, change `SOURCE` in
+both launchers before sending the zip.
+
+## Getting started - for developers
+
+Requires Python 3.11+.
 
 ```bash
 git clone git@github.com:friedmanroy/spatial-visualizer.git
 cd spatial-visualizer
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt     # or: pip install -e .
 ```
+
+Dependencies are pinned in `pyproject.toml`. `requirements.txt` just installs this package
+(in editable mode) from there.
 
 ## Usage
 
 ```bash
-python st_visualizer.py
+python st_visualizer.py     # or, after installing: spatial-visualizer
 ```
 
-This opens a browser tab with a landing page. From there:
+(Or double-click a `Start Spatial Visualizer` launcher, see above.) This opens a browser tab with a landing page. From there:
 
 1. Enter (or browse to) the path of a spatial `.h5ad` file - it must have coordinates in
    `adata.obsm['spatial']`.
-2. Once loaded, pick which obs column separates samples/fields-of-view (or check the box if
-   the file has only one), optionally point at a `pathways.json` file (defaults to
-   `data/pathways.json` if present), and choose which obs fields should be offered for
+2. Once loaded, pick which obs column separates samples/fields-of-view (leave it as **None**
+   if the file is a single sample; the choice is remembered for next time), optionally point at a `pathways.json` file (defaults to
+   the bundled `viewer/data/pathways.json`), and choose which obs fields should be offered for
    coloring.
 3. Click **Open viewer**. The **Spatial** tab shows the hex/point rendering with per-sample
    navigation and the Field / Gene & Pathway coloring controls described above.
@@ -64,9 +120,9 @@ Closing the browser tab shuts the server down automatically.
 
 ## Data
 
-- `data/pathways.json` - the gene-set definitions used by the Gene & Pathway view. Each entry
+- `viewer/data/pathways.json` - the gene-set definitions used by the Gene & Pathway view. Each entry
   has a `source`, a `description`, and a list of `genes` (edit or extend freely - the app reads
-  this file at startup).
+  this file at startup; launcher users can instead point the app at their own copy).
 - The bundled Open-ST/RCTD `.h5ad` used during development is **not** included in this
   repository (too large for git) - point the app at your own `.h5ad` file instead.
 
@@ -74,7 +130,10 @@ Closing the browser tab shuts the server down automatically.
 
 ```
 st_visualizer.py         entry point (`python st_visualizer.py`)
+pyproject.toml           package metadata + pinned dependencies (`spatial-visualizer` command)
+Start Spatial Visualizer (Mac).command / (Windows).bat   double-click launchers
 viewer/
+  cli.py                 starts the server (shared by the script and the installed command)
   app.py                 assembles the landing page and the tabbed main viewer
   landing.py              landing page: file path, sample/FOV column, field selection
   spatial_page.py          "Spatial" tab
@@ -89,6 +148,5 @@ viewer/
   cache.py                   persists per-dataset color/field choices to cache/
   file_picker.py              native OS file-picker integration
   error_dialog.py             global error popup
-data/
-  pathways.json              example gene-set definitions
+  data/pathways.json        example gene-set definitions (bundled with the package)
 ```

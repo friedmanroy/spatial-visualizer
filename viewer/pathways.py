@@ -1,4 +1,4 @@
-"""Loading data/pathways.json and scoring gene sets against whichever AnnData is active.
+"""Loading pathways.json (default: viewer/data/pathways.json) and scoring gene sets against whichever AnnData is active.
 
 Ported from the TNBC viewer's scanpy score_genes pattern, generalized to take the
 target AnnData as a parameter (so the same scoring works for the spatial data and any

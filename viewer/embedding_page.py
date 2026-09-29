@@ -60,7 +60,7 @@ def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int):
 
 
 def build_embedding_page(state) -> pn.viewable.Viewable:
-    path_input, path_picker = build_path_picker("scRNA / snRNA .h5ad path")
+    path_input, browse_btn, _ = build_path_picker("scRNA / snRNA .h5ad path")
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
     load_progress = pn.indicators.Progress(
         active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
@@ -268,7 +268,9 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
 
     sidebar = pn.Column(
         "### Companion scRNA / snRNA data",
-        path_picker, load_btn, load_progress,
+        # Browse next to Load rather than next to the input - the sidebar is too narrow
+        # for input + button side by side.
+        path_input, pn.Row(browse_btn, load_btn), load_progress,
         pn.layout.Divider(),
         "**PCA / UMAP settings**",
         pn.Row(n_pcs_input, n_neighbors_input),

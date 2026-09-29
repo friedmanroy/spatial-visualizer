@@ -129,19 +129,3 @@ def list_field_options(adata, exclude: tuple[str, ...] = ()) -> list[str]:
             options.append(col)
     return sorted(options)
 
-
-def guess_sample_column(adata) -> str | None:
-    """Best-effort default suggestion for the FOV/sample-splitting column - never
-    required, just pre-selects something sensible on the landing page."""
-    candidates = []
-    for col in adata.obs.columns:
-        spec = classify_field(adata, col)
-        if spec.kind == "categorical" and 1 < len(spec.categories) <= CHECKBOX_MAX:
-            candidates.append((col, spec))
-    if not candidates:
-        return None
-    hints = ("sample", "fov", "library", "batch", "section", "slide")
-    for col, _ in candidates:
-        if any(h in col.lower() for h in hints):
-            return col
-    return candidates[0][0]

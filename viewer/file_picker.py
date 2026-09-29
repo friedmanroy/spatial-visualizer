@@ -58,9 +58,13 @@ def _pick_file_blocking(file_pattern: str) -> str | None:
 
 def build_path_picker(
     label: str, placeholder: str = "/path/to/data.h5ad", file_pattern: str = "*.h5ad"
-) -> tuple[pn.widgets.TextInput, pn.viewable.Viewable]:
+) -> tuple[pn.widgets.TextInput, pn.widgets.Button, pn.viewable.Viewable]:
+    """Returns (text input, browse button, both side by side). Callers short on width
+    can ignore the combined row and lay out the input and button themselves."""
     path_input = pn.widgets.TextInput(name=label, placeholder=placeholder)
-    browse_btn = pn.widgets.Button(name="Browse...", width=110)
+    # align="end" puts the button at the bottom of the row, level with the text box
+    # rather than with the text box's title above it.
+    browse_btn = pn.widgets.Button(name="Browse...", width=110, align="end")
 
     async def on_browse(event):
         browse_btn.disabled = True  # avoid stacking several dialogs
@@ -76,4 +80,4 @@ def build_path_picker(
 
     browse_btn.on_click(on_browse)
 
-    return path_input, pn.Row(path_input, browse_btn)
+    return path_input, browse_btn, pn.Row(path_input, browse_btn)

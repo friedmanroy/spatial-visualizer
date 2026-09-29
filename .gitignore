@@ -7,5 +7,13 @@ __pycache__/
 # per-dataset UI choices (custom colors, enabled fields) - regenerated automatically
 cache/
 
-# raw data - only data/pathways.json is tracked
+# raw data (the bundled pathways.json lives in viewer/data/)
 data/*.h5ad
+
+# packaging build output
+build/
+*.egg-info/
+
+# environment the double-click launchers create when running the local copy
+.venv/
+uv.lock
