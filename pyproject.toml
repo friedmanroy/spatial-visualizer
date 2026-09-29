@@ -7,7 +7,7 @@ name = "spatial-visualizer"
 version = "0.1.0"
 description = "Interactive Panel + Bokeh viewer for spatial transcriptomics AnnData (.h5ad) files"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 # Exact pins so every user (including the double-click launchers) gets the same,
 # known-working environment. This is the single list of dependencies -
 # requirements.txt just points here.

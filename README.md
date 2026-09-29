@@ -87,7 +87,7 @@ both launchers before sending the zip.
 
 ## Getting started - for developers
 
-Requires Python 3.11+.
+Requires Python 3.12+.
 
 ```bash
 git clone git@github.com:friedmanroy/spatial-visualizer.git
