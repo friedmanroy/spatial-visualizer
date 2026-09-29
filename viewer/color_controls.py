@@ -150,6 +150,18 @@ class ColorControls:
                 w["pathway"].options = [""] + pathway_names
                 w["gene"].options = gene_names
 
+    def refresh_pathway_options(self, changed_name: str | None = None):
+        """Re-reads the pathway list after the Pathways tab added/changed/removed one,
+        recoloring if a channel is showing the pathway that changed."""
+        pathway_names = sorted(self.get_pathways().keys())
+        with pn.io.hold():
+            for w in self.channel_widgets.values():
+                if w["pathway"].value not in pathway_names:
+                    w["pathway"].value = ""
+                w["pathway"].options = [""] + pathway_names
+            if changed_name and any(w["pathway"].value == changed_name for w in self.channel_widgets.values()):
+                self._fire()
+
     def _on_mode_change(self, event):
         # Several widget properties change here, each of which can synchronously
         # re-enter our own watchers (rebuilding the value picker, redrawing the plot).

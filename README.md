@@ -21,6 +21,10 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Gene & Pathway view** - RGB-channel overlay of up to three genes or gene-set (pathway)
   scores at once, with autocomplete gene search, a description + gene list for each pathway,
   and a small histogram of the score distribution under each channel.
+- **Custom pathways** - a **Pathways** tab where you paste a comma- or line-separated gene
+  list to add your own gene set. It's immediately available in the Gene & Pathway coloring,
+  and saved to `cache/custom_pathways.json` so it's loaded automatically next time (the
+  default `pathways.json` is left untouched).
 - **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
   from the spatial data itself, with configurable number of PCs and neighbors. Uses scanpy's
   own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
@@ -148,11 +152,12 @@ viewer/
   landing.py              landing page: file path, sample/FOV column, field selection
   spatial_page.py          "Spatial" tab
   embedding_page.py        "scRNA / snRNA" tab
+  pathways_page.py         "Pathways" tab: add/remove custom gene sets
   color_controls.py        shared Field / Gene & Pathway coloring controls
   fields.py                 generic obs-column classification (categorical/binned/unusable)
   colors.py                 palette assignment, RGB blending
   histogram.py               gene/pathway score distribution histograms
-  pathways.py                pathways.json loading + scanpy score_genes scoring
+  pathways.py                pathways.json + custom pathway loading, score_genes scoring
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
   cache.py                   persists per-dataset color/field choices to cache/

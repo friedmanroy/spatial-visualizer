@@ -149,6 +149,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         get_dataset, get_pathways, on_change=recolor_only, get_active_indices=get_active_indices,
     )
     controls.refresh_for_dataset()
+    state.pathway_listeners.append(controls.refresh_pathway_options)
     recolor_only()
 
     def on_sample_change(event):

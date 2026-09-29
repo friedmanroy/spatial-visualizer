@@ -103,3 +103,5 @@ class AppState:
         self.embedding: Dataset | None = None
         self.pathways: dict = {}
         self.pathways_path: str = ""
+        # Called with a pathway name whenever the Pathways tab adds/changes/removes one.
+        self.pathway_listeners: list = []

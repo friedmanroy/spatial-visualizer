@@ -7,6 +7,7 @@ import panel as pn
 from .embedding_page import build_embedding_page
 from .error_dialog import build_error_dialog
 from .landing import build_landing
+from .pathways_page import build_pathways_page
 from .spatial_page import build_spatial_page
 from .state import AppState
 
@@ -19,8 +20,9 @@ def build() -> pn.viewable.Viewable:
     def show_viewer():
         spatial_tab = build_spatial_page(state)
         embedding_tab = build_embedding_page(state)
+        pathways_tab = build_pathways_page(state)
         tabs = pn.Tabs(
-            ("Spatial", spatial_tab), ("scRNA / snRNA", embedding_tab),
+            ("Spatial", spatial_tab), ("scRNA / snRNA", embedding_tab), ("Pathways", pathways_tab),
             sizing_mode="stretch_both",
         )
         root.sizing_mode = "stretch_both"

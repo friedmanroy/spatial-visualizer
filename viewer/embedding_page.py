@@ -165,6 +165,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         _update_count(colors, mat.shape[0])
 
     controls = ColorControls(get_dataset, get_pathways, on_change=recolor_only)
+    state.pathway_listeners.append(controls.refresh_pathway_options)
 
     def activate_dataset(ds: Dataset, label: str):
         state.embedding = ds
