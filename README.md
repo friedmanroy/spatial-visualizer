@@ -44,6 +44,10 @@ unidentified developer". Right-click (or Control-click) the file, choose **Open*
 **Open** again. On newer macOS versions you may instead need to go to
 **System Settings -> Privacy & Security** and click **Open Anyway**. You only need to do this once.
 
+If that doesn't work (or you'd rather skip it), open **Terminal**, type `source ` (with a
+space after it), drag the `install_vis.bash` file from this folder into the Terminal window,
+and press Enter. This one-time setup unblocks the launcher, and then double-clicking works.
+
 **First time on Windows:** if a blue "Windows protected your PC" box appears, click
 **More info -> Run anyway**. You only need to do this once.
 
