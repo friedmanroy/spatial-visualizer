@@ -4,33 +4,112 @@ hex-binned look (solid, densely-packed blobs rather than sparse dots).
 Purely geometric (driven by the point cloud's own spacing), so it carries over to any
 dataset with obsm['spatial'] coordinates without assuming anything about obs schema.
 
-Cells are drawn as data-space circles (a single scalar radius per sample, from the
-same nearest-neighbor spacing estimate a true hex-bin would use) rather than
-individually-computed hexagon polygons: Bokeh's `Patches` glyph requires each
+Cells are drawn as data-space hexagons, squares or circles, each sized (and, for
+hexagons/squares, rotated) from the sample's own nearest-neighbor spacing so that at
+scale 1 they would tile the plane if every lattice position were observed. They use
+Bokeh's `ngon` / `rect` / `circle` glyphs with one scalar size and angle per sample,
+rather than individually-computed polygons: Bokeh's `Patches` glyph requires each
 polygon's vertices as a *ragged* array, which only supports slow per-row JSON
 serialization - resending that for every ~10-100k-cell sample on every switch is
-the main thing that made switching sample/FOV or color field feel slow. A `circle`
-glyph's x/y/color columns are plain 1D arrays, which get Bokeh's fast binary-buffer
-transport, and the (per-sample-constant) radius is a single cheap property update.
+the main thing that made switching sample/FOV or color field feel slow. These
+glyphs' x/y/color columns are plain 1D arrays, which get Bokeh's fast binary-buffer
+transport, and the (per-sample-constant) size/angle is a single cheap property update.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 from bokeh.plotting import figure
 from sklearn.neighbors import NearestNeighbors
 
 
-def estimate_hex_radius(coords: np.ndarray) -> float:
+MARKER_SHAPES = ("Hexagons", "Squares", "Circles")
+#: dropdown value meaning "use the shape detected from the sample's own lattice"
+AUTO_SHAPE = "Auto"
+
+#: neighbors closer than this multiple of the spacing count as the lattice's first ring;
+#: the second ring is at sqrt(2) (square) / sqrt(3) (hex) times the spacing.
+_FIRST_RING = 1.2
+#: how close to perfect (1) the 6-fold / 4-fold bond order must be to call a lattice
+#: hexagonal / square; lower values tolerate more positional jitter.
+_ORDER_THRESHOLD = 0.7
+
+
+@dataclass(frozen=True)
+class Lattice:
+    """Per-sample geometry the markers are sized/rotated from."""
+    spacing: float  # typical center-to-center distance between neighboring cells
+    hex_angle: float  # rotation (radians) that lines hexagon sides up with the neighbors
+    square_angle: float  # same, for squares
+    shape: str  # detected marker shape: one of MARKER_SHAPES
+
+
+def _bond_order(phi: np.ndarray, fold: int) -> tuple[float, float]:
+    """(order, angle) of neighbor-bond directions `phi` under `fold`-fold symmetry:
+    order is |mean(exp(i*fold*phi))|, ~1 when all bonds sit on a fold-fold star (6 for a
+    hex lattice, 4 for square) and ~0 otherwise; angle is that star's rotation."""
+    if len(phi) == 0:
+        return 0.0, 0.0
+    z = np.mean(np.exp(1j * fold * phi))
+    return float(np.abs(z)), float(np.angle(z) / fold)
+
+
+def estimate_lattice(coords: np.ndarray) -> Lattice:
+    """Spacing, orientation and shape of the lattice the cells sit on (if any).
+
+    The shape comes from the directions to each cell's first-ring neighbors: on a hex
+    lattice they're multiples of 60 deg apart, on a square one multiples of 90 deg, and any
+    3 first-ring neighbors are enough to tell the two apart. Pooled over all cells (to
+    tolerate jitter) that's the 6-fold vs 4-fold bond order. No cell with 3+ neighbors
+    in the first ring, or neither order high enough -> not a lattice -> circles.
+    """
     n = len(coords)
     if n < 2:
-        return 1.0
-    k = min(6, n)
-    nn = NearestNeighbors(n_neighbors=k).fit(coords)
-    dist, _ = nn.kneighbors(coords)
-    spacing = np.percentile(dist[:, 1], 5)
-    return max(float(spacing) * 0.58, 1e-6)
+        return Lattice(1.0, 0.0, 0.0, "Circles")
+    nn = NearestNeighbors(n_neighbors=min(7, n)).fit(coords)  # self + up to 6 (hex) neighbors
+    dist, ind = nn.kneighbors(coords)
+    dist, ind = dist[:, 1:], ind[:, 1:]
+    d = dist[:, 0]
+    positive = d[d > 0]  # duplicate positions would otherwise give a zero spacing
+    if len(positive) == 0:
+        return Lattice(1.0, 0.0, 0.0, "Circles")
+    # Each cell's distance to its closest neighbor, then the median over cells: the global
+    # minimum (or a low percentile) is dominated by a few unusually close / jittered pairs
+    # and would leave visible gaps between the markers.
+    spacing = max(float(np.median(positive)), 1e-6)
+
+    ring = (dist > 0) & (dist < _FIRST_RING * spacing)
+    rows, cols = np.nonzero(ring)
+    vec = coords[ind[rows, cols]] - coords[rows]
+    # Bokeh angles are counter-clockwise on screen, and the figure's y axis is flipped.
+    phi = np.arctan2(-vec[:, 1], vec[:, 0])
+    hex_order, hex_angle = _bond_order(phi, 6)
+    square_order, square_angle = _bond_order(phi, 4)
+
+    if ring.sum(axis=1).max(initial=0) < 3:
+        shape = "Circles"
+    elif hex_order >= _ORDER_THRESHOLD and hex_order > square_order:
+        shape = "Hexagons"
+    elif square_order >= _ORDER_THRESHOLD:
+        shape = "Squares"
+    else:
+        shape = "Circles"
+    return Lattice(spacing, hex_angle, square_angle, shape)
+
+
+def marker_props(shape: str, lattice: Lattice, scale: float = 1.0) -> dict:
+    """Glyph properties for `shape` so that, at scale 1, markers tile the plane on the
+    sample's lattice: hexagons of flat-to-flat width = spacing (circumradius spacing/sqrt(3)),
+    squares of side = spacing, and circles with the hexagon's circumradius (they can't
+    tile exactly, so they overlap just enough to leave no gaps on a hex lattice)."""
+    if shape == "Hexagons":
+        return {"radius": lattice.spacing / np.sqrt(3) * scale, "angle": lattice.hex_angle}
+    if shape == "Squares":
+        side = lattice.spacing * scale
+        return {"width": side, "height": side, "angle": lattice.square_angle}
+    return {"radius": lattice.spacing / np.sqrt(3) * scale}
 
 
 #: background for Field (categorical/binned obs) coloring - light, so category colors read clearly

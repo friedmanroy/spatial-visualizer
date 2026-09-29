@@ -11,6 +11,11 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Generic field coloring** - pick any obs column; categorical fields get one checkbox +
   clickable color swatch per category (click a swatch to open the color picker), continuous
   fields are automatically binned into 10 groups.
+- **Cell shapes** - draw cells as hexagons, squares or circles. **Auto** (the default)
+  detects per sample whether the spots sit on a hexagonal grid (e.g. Visium), a square grid
+  (e.g. binned Visium HD / Stereo-seq) or neither (e.g. segmented cells, Slide-seq -> circles).
+  Markers are sized (and rotated) from the spacing between neighboring cells so they tile the
+  tissue, and a slider makes them smaller or bigger.
 - **Fields-of-view / samples** - pick which obs column splits the data into samples, then
   browse between them with a dropdown or Prev/Next.
 - **Gene & Pathway view** - RGB-channel overlay of up to three genes or gene-set (pathway)
@@ -114,7 +119,8 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
    if the file is a single sample; the choice is remembered for next time), optionally point at a `pathways.json` file (defaults to
    the bundled `viewer/data/pathways.json`), and choose which obs fields should be offered for
    coloring.
-3. Click **Open viewer**. The **Spatial** tab shows the hex/point rendering with per-sample
+3. Click **Open viewer**. The **Spatial** tab shows each cell as a hexagon, square or circle (auto-detected)
+   (sized so they tile the tissue by default, adjustable with the **Cell size** slider) with per-sample
    navigation and the Field / Gene & Pathway coloring controls described above.
 4. The **scRNA / snRNA** tab lets you load a companion single-cell dataset, or compute a
    PCA/UMAP embedding directly from the spatial data on demand (this can take a while for large
@@ -147,7 +153,7 @@ viewer/
   colors.py                 palette assignment, RGB blending
   histogram.py               gene/pathway score distribution histograms
   pathways.py                pathways.json loading + scanpy score_genes scoring
-  spatial_plot.py            spatial rendering (Bokeh circle glyph)
+  spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
   cache.py                   persists per-dataset color/field choices to cache/
   file_picker.py              native OS file-picker integration

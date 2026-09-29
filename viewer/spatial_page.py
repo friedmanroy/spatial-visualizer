@@ -1,4 +1,4 @@
-"""The 'Spatial' tab: per-sample hex-patch rendering + Field / Gene & Pathway coloring."""
+"""The 'Spatial' tab: per-sample hexagon/square/circle rendering + Field / Gene & Pathway coloring."""
 from __future__ import annotations
 
 import numpy as np
@@ -24,16 +24,47 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         if sample_id not in geom_cache:
             idx = dataset.sample_indices(sample_id)
             coords = dataset.adata.obsm["spatial"][idx]
-            radius = spatial_plot.estimate_hex_radius(coords)
-            geom_cache[sample_id] = (idx, coords, radius)
+            lattice = spatial_plot.estimate_lattice(coords)
+            geom_cache[sample_id] = (idx, coords, lattice)
         return geom_cache[sample_id]
 
     initial_sample = dataset.sample_ids[0]
-    idx0, coords0, radius0 = get_geometry(initial_sample)
+    idx0, coords0, lattice0 = get_geometry(initial_sample)
     source = ColumnDataSource(data={"x": coords0[:, 0], "y": coords0[:, 1], "fill_color": [GRAY] * len(idx0)})
-    renderer = fig.circle(
-        x="x", y="y", source=source, radius=radius0, fill_color="fill_color", line_width=0, fill_alpha=1.0,
+
+    marker_shape = pn.widgets.Select(
+        name="Cell shape", options=[spatial_plot.AUTO_SHAPE, *spatial_plot.MARKER_SHAPES],
+        value=spatial_plot.AUTO_SHAPE,
     )
+    # 1 = the size at which markers would exactly tile the sample (see spatial_plot.marker_props).
+    marker_scale = pn.widgets.FloatSlider(name="Cell size", start=0.2, end=2.0, step=0.05, value=1.0)
+
+    # One renderer per shape, all sharing `source`; only the chosen one is visible, so
+    # switching shape is a visibility toggle rather than re-sending any data.
+    glyph_kwargs = dict(
+        x="x", y="y", source=source, fill_color="fill_color", line_color=None, fill_alpha=1.0,
+    )
+    renderers = {
+        "Hexagons": fig.ngon(n=6, **spatial_plot.marker_props("Hexagons", lattice0), **glyph_kwargs),
+        "Squares": fig.rect(**spatial_plot.marker_props("Squares", lattice0), **glyph_kwargs),
+        "Circles": fig.circle(**spatial_plot.marker_props("Circles", lattice0), **glyph_kwargs),
+    }
+
+    def update_markers(lattice):
+        marker_shape.name = f"Cell shape (detected: {lattice.shape.lower()})"
+        shape = lattice.shape if marker_shape.value == spatial_plot.AUTO_SHAPE else marker_shape.value
+        for name, r in renderers.items():
+            r.visible = name == shape
+        glyph = renderers[shape].glyph
+        for prop, value in spatial_plot.marker_props(shape, lattice, marker_scale.value).items():
+            setattr(glyph, prop, value)
+
+    def on_marker_change(event):
+        update_markers(get_geometry(sample_select.value)[2])
+
+    marker_shape.param.watch(on_marker_change, "value")
+    marker_scale.param.watch(on_marker_change, "value")
+    update_markers(lattice0)
     # Background tissue image: any image found under uns['spatial'], chosen by the user
     # (layouts vary too much to guess which one, if any, belongs to which sample).
     bg_images = spatial_plot.find_background_images(dataset.adata)
@@ -68,7 +99,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     cell_opacity = pn.widgets.FloatSlider(name="Cell opacity", start=0.0, end=1.0, step=0.05, value=1.0)
 
     def on_opacity_change(event):
-        renderer.glyph.fill_alpha = event.new
+        for r in renderers.values():
+            r.glyph.fill_alpha = event.new
 
     cell_opacity.param.watch(on_opacity_change, "value")
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
@@ -94,10 +126,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return full_colors[idx]
 
     def redraw_full(sample_id: str):
-        idx, coords, radius = get_geometry(sample_id)
+        idx, coords, lattice = get_geometry(sample_id)
         colors = current_colors_for_idx(idx)
         source.data = {"x": coords[:, 0], "y": coords[:, 1], "fill_color": list(colors)}
-        renderer.glyph.radius = radius
+        update_markers(lattice)
         update_background()
         n_shown = int(np.sum(np.asarray(colors) != GRAY))
         count_label.object = f"**{n_shown:,}** / {len(idx):,} cells highlighted"
@@ -140,6 +172,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         sample_select,
         pn.Row(prev_btn, next_btn),
         count_label,
+        marker_shape,
+        marker_scale,
         bg_select,
         bg_orientation,
         cell_opacity,
