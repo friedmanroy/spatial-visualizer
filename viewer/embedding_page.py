@@ -21,7 +21,7 @@ from bokeh.plotting import figure
 from . import clustering, spatial_plot
 from .color_controls import ColorControls, section_label
 from .colors import GRAY
-from .file_picker import build_path_picker
+from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
 
 DEFAULT_N_PCS = clustering.DEFAULT_N_PCS
@@ -202,6 +202,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
                 status.object = "Normalizing..."
                 await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
+            remember_folder_of(path)
             if not _has_embedding(adata):
                 status.object = (
                     f"Computing PCA ({n_pcs_input.value} PCs) and UMAP "

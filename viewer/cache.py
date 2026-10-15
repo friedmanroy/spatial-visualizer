@@ -66,3 +66,30 @@ class ColorCache:
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(self.path, "w") as f:
             json.dump(self.data, f, indent=2)
+
+
+# ---- app-wide settings (not tied to one dataset) ------------------------------------
+
+_SETTINGS_PATH = os.path.join(CACHE_DIR, "settings.json")
+
+
+def _load_settings() -> dict:
+    try:
+        with open(_SETTINGS_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_last_directory() -> str | None:
+    """Folder the file picker last chose a file in (any session), if it still exists."""
+    path = _load_settings().get("last_directory")
+    return path if path and os.path.isdir(path) else None
+
+
+def set_last_directory(path: str):
+    settings = _load_settings()
+    settings["last_directory"] = path
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(_SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)

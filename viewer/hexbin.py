@@ -14,7 +14,7 @@ import scipy.sparse as sp
 #: samples with more cells than this are shown hex-binned by default
 BINNING_THRESHOLD = 1_000_000
 #: the default bin width aims for roughly this many bins per sample
-TARGET_BINS = 100_000
+TARGET_BINS = 25_000
 
 
 @dataclass(frozen=True)
@@ -30,8 +30,16 @@ class HexBinning:
     def n_bins(self) -> int:
         return len(self.counts)
 
-    def mean(self, values: np.ndarray) -> np.ndarray:
-        return self.mean_matrix @ np.nan_to_num(np.asarray(values, dtype=float))
+    def mean(self, values: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+        """Per-bin mean of `values` (one per cell). With a boolean `mask`, only the
+        masked-in cells are averaged, and bins without any are NaN."""
+        values = np.nan_to_num(np.asarray(values, dtype=float))
+        if mask is None:
+            return self.mean_matrix @ values
+        n_in = np.bincount(self.cell_bin, weights=mask.astype(float), minlength=self.n_bins)
+        total = np.bincount(self.cell_bin, weights=np.where(mask, values, 0.0), minlength=self.n_bins)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(n_in > 0, total / n_in, np.nan)
 
     def majority(self, codes: np.ndarray) -> np.ndarray:
         """Most common non-negative code in each bin (-1 for bins with none)."""

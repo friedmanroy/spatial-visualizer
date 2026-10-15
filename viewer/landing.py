@@ -14,7 +14,7 @@ import scanpy as sc
 from . import clustering, hexbin
 from . import pathways as pathways_mod
 from .cache import ColorCache
-from .file_picker import build_path_picker
+from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
 
 # Shipped inside the package so it's found however the app was installed/launched.
@@ -104,6 +104,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
+            remember_folder_of(path)
             holder["dataset"] = ds
 
             status.object = "Inspecting obs columns..."
