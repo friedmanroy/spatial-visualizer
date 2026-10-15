@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import sys
 import traceback
 
@@ -11,12 +12,15 @@ from bokeh.models import ColumnDataSource
 
 from . import clustering, hexbin, spatial_plot
 from .color_controls import ColorControls
+from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY
 
 
 def build_spatial_page(state) -> pn.viewable.Viewable:
     dataset = state.spatial
-    fig = spatial_plot.make_figure(title="Spatial view")
+    # The plot's own title is replaced by the HTML header above it (plot_header), which
+    # can use bold/colored text for what's shown and how it's colored.
+    fig = spatial_plot.make_figure(title=None)
     geom_cache: dict[str, tuple] = {}
 
     def update_background():
@@ -34,12 +38,18 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     # category per bin) - drawing and recoloring a million+ markers is what's slow.
     largest_sample = dataset.largest_sample_size()
     bin_toggle = pn.widgets.Checkbox(
-        name="Average over hexagonal bins (much faster for huge samples)",
-        value=largest_sample > hexbin.BINNING_THRESHOLD,
+        name="Average cells into hexagonal bins",
+        value=largest_sample > hexbin.BINNING_THRESHOLD, margin=(8, 5, 2, 5),
+    )
+    bin_hint = pn.pane.HTML(
+        f"Much faster for huge samples; on by default above {hexbin.BINNING_THRESHOLD:,} cells. "
+        "Each bin shows its cells' mean expression, or their most common selected category.",
+        styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     bin_width = pn.widgets.FloatInput(
         name="Bin width (in cell spacings)", value=hexbin.default_width_factor(largest_sample),
-        start=1.0, end=100.0, step=0.5, width=200, visible=bin_toggle.value,
+        start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
+        description="How many neighboring cells wide each hexagon is; a bin k wide holds about k² cells.",
     )
 
     def get_binning(sample_id: str) -> hexbin.HexBinning | None:
@@ -61,10 +71,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     marker_shape = pn.widgets.Select(
         name="Cell shape", options=[spatial_plot.AUTO_SHAPE, *spatial_plot.MARKER_SHAPES],
-        value=spatial_plot.AUTO_SHAPE,
+        value=spatial_plot.AUTO_SHAPE, sizing_mode="stretch_width",
+        description="Auto uses the shape of the grid the cells sit on (hexagonal, square, or none).",
     )
     # 1 = the size at which markers would exactly tile the sample (see spatial_plot.marker_props).
-    marker_scale = pn.widgets.FloatSlider(name="Cell size", start=0.2, end=2.0, step=0.05, value=1.0)
+    marker_scale = pn.widgets.FloatSlider(
+        name="Cell size (1 = cells just touch)", start=0.2, end=2.0, step=0.05, value=1.0,
+        sizing_mode="stretch_width",
+    )
 
     # One renderer per shape, all sharing `source`; only the chosen one is visible, so
     # switching shape is a visibility toggle rather than re-sending any data.
@@ -107,10 +121,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bg_select = pn.widgets.Select(
         name="Background image" if bg_images else "Background image (none found in uns['spatial'])",
         options=["None"] + list(bg_images), value="None", disabled=not bg_images,
+        sizing_mode="stretch_width",
     )
     bg_orientation = pn.widgets.Select(
         name="Image orientation", options=list(spatial_plot.IMAGE_ORIENTATIONS),
-        value="As stored", visible=False,
+        value="As stored", visible=False, sizing_mode="stretch_width",
+        description="Change this if the image doesn't line up with the cells.",
     )
 
     def update_bg_image(*events):
@@ -129,7 +145,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bg_orientation.param.watch(update_bg_image, "value")
 
     # Lets a background image show through the (otherwise solid, densely packed) cells.
-    cell_opacity = pn.widgets.FloatSlider(name="Cell opacity", start=0.0, end=1.0, step=0.05, value=1.0)
+    cell_opacity = pn.widgets.FloatSlider(
+        name="Cell opacity (lower to see a background image)", start=0.0, end=1.0, step=0.05,
+        value=1.0, sizing_mode="stretch_width",
+    )
 
     def on_opacity_change(event):
         for r in renderers.values():
@@ -137,11 +156,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     cell_opacity.param.watch(on_opacity_change, "value")
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
+    plot_header = pn.pane.HTML("", sizing_mode="stretch_width", margin=(6, 10, 0, 10),
+                               styles={"font-size": "14px", "line-height": "1.5"})
 
-    sample_select = pn.widgets.Select(name="Sample / FOV", options=list(dataset.sample_ids), value=initial_sample)
-    prev_btn = pn.widgets.Button(name="◀ Prev", width=90)
-    next_btn = pn.widgets.Button(name="Next ▶", width=90)
-    count_label = pn.pane.Markdown("")
+    n_samples = len(dataset.sample_ids)
+    sample_select = pn.widgets.Select(
+        name=_sample_label(0, n_samples), options=list(dataset.sample_ids), value=initial_sample,
+        sizing_mode="stretch_width", margin=(5, 2, 5, 2),
+    )
+    prev_btn = pn.widgets.Button(name="◀", width=36, margin=(23, 0, 5, 5), description="Previous sample / FOV")
+    next_btn = pn.widgets.Button(name="▶", width=36, margin=(23, 5, 5, 0), description="Next sample / FOV")
+    # Nothing to navigate when the file wasn't split into samples.
+    sample_nav = pn.Row(prev_btn, sample_select, next_btn, sizing_mode="stretch_width",
+                        visible=n_samples > 1, margin=0)
 
     def get_dataset():
         return state.spatial
@@ -162,14 +189,23 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return full_colors[idx]
 
     def update_count(colors, idx, binning):
-        n_shown = int(np.sum(np.asarray(colors) != GRAY))
-        if binning is None:
-            count_label.object = f"**{n_shown:,}** / {len(idx):,} cells highlighted"
-        else:
-            count_label.object = (
-                f"**{n_shown:,}** / {binning.n_bins:,} hex bins highlighted "
-                f"({len(idx):,} cells, ~{len(idx) / binning.n_bins:.1f} per bin)"
+        """The header above the plot: which sample, how many cells, what they're
+        colored by, and (in Field mode) how many are in the selected categories."""
+        sample = sample_select.value
+        where = f"<b>{html.escape(sample)}</b> · " if n_samples > 1 else ""
+        line1 = f"{where}{len(idx):,} cells · {controls.coloring_summary_html()}"
+        if controls.mode.value == "Field" and controls.field_select.value:
+            n_shown = int(np.sum(np.asarray(colors) != GRAY))
+            unit = "cells" if binning is None else "bins"
+            total = len(idx) if binning is None else binning.n_bins
+            line1 += f" · <b>{n_shown:,}</b> of {total:,} {unit} in the selected categories"
+        lines = [line1]
+        if binning is not None:
+            lines.append(
+                f'<span style="color:#555;font-size:13px">Shown as {binning.n_bins:,} hexagonal bins '
+                f"(~{len(idx) / binning.n_bins:.1f} cells each) - change under Display settings</span>"
             )
+        plot_header.object = "<br>".join(lines)
 
     def redraw_full(sample_id: str):
         idx, coords, lattice, binning = get_display(sample_id)
@@ -199,7 +235,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     # resolution gets its own obs column, so earlier clusterings stay available.
     leiden_resolution = pn.widgets.FloatInput(
         name="Resolution (higher = more clusters)", value=clustering.DEFAULT_LEIDEN_RESOLUTION,
-        start=0.05, end=10, step=0.1, width=200,
+        start=0.05, end=10, step=0.1, sizing_mode="stretch_width",
     )
     leiden_btn = pn.widgets.Button(name="Run Leiden", button_type="primary", width=110, margin=(23, 5, 5, 5))
     leiden_progress = pn.indicators.Progress(
@@ -208,13 +244,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
     # With hex binning on, the bins shown are what gets clustered (each by its cells'
     # mean expression) - far faster than clustering a million+ individual cells.
-    leiden_target = pn.pane.Markdown("", margin=(0, 5), styles={"font-size": "12px", "color": "#555"})
+    leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
 
     def update_leiden_target(*events):
         leiden_target.object = (
-            f"Clusters the hexagonal bins shown (width {bin_width.value:g} cell spacings)."
-            if bin_toggle.value else "Clusters individual cells."
-        )
+            f"Clusters the hexagonal bins shown (width {bin_width.value:g} cell spacings), "
+            "then gives each cell its bin's cluster. "
+            if bin_toggle.value else "Clusters individual cells. "
+        ) + "The result is added as a new field to color by."
 
     update_leiden_target()
     bin_toggle.param.watch(update_leiden_target, "value")
@@ -250,12 +287,20 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
-        leiden_target, pn.Row(leiden_resolution, leiden_btn), leiden_progress, leiden_status,
-        title="Leiden clustering", collapsed=True, sizing_mode="stretch_width",
+        leiden_target, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
+        leiden_progress, leiden_status,
+        title="Leiden clustering", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
+    )
+    display_card = pn.Card(
+        bin_toggle, bin_hint, bin_width, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation,
+        title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
 
     def on_sample_change(event):
-        redraw_full(event.new)
+        sample_select.name = _sample_label(dataset.sample_ids.index(event.new), n_samples)
+        with pn.io.hold():
+            controls.update_category_counts()
+            redraw_full(event.new)
 
     def on_prev(event):
         i = dataset.sample_ids.index(sample_select.value)
@@ -279,21 +324,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     prev_btn.on_click(on_prev)
     next_btn.on_click(on_next)
 
+    # Coloring (the part used constantly) right under the sample picker, taking all the
+    # spare height; set-once settings sit in collapsed panels at the bottom.
     sidebar = pn.Column(
-        sample_select,
-        pn.Row(prev_btn, next_btn),
-        count_label,
-        bin_toggle,
-        bin_width,
-        marker_shape,
-        marker_scale,
-        bg_select,
-        bg_orientation,
-        cell_opacity,
-        leiden_card,
-        pn.layout.Divider(),
+        sample_nav,
         controls.layout,
+        display_card,
+        leiden_card,
         width=380,
         sizing_mode="stretch_height",
     )
-    return pn.Row(sidebar, bokeh_pane, sizing_mode="stretch_both")
+    plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
+    return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
+
+
+def _sample_label(i: int, n: int) -> str:
+    return f"Sample / FOV ({i + 1} of {n})"

@@ -19,13 +19,17 @@ from bokeh.models import ColumnDataSource
 from bokeh.plotting import figure
 
 from . import clustering, spatial_plot
-from .color_controls import ColorControls
+from .color_controls import ColorControls, section_label
 from .colors import GRAY
 from .file_picker import build_path_picker
 from .state import Dataset
 
 DEFAULT_N_PCS = clustering.DEFAULT_N_PCS
 DEFAULT_N_NEIGHBORS = clustering.DEFAULT_N_NEIGHBORS
+_EMPTY_HEADER = (
+    "<i>No embedding yet: load a companion scRNA / snRNA file, or compute PCA / UMAP "
+    "from the spatial data, in the panel on the left.</i>"
+)
 
 
 def _has_embedding(adata) -> bool:
@@ -66,14 +70,22 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     status = pn.pane.Markdown("_No embedding loaded yet._")
 
     embedding_kind = pn.widgets.RadioButtonGroup(
-        options=["PCA", "UMAP"], value="PCA", button_type="primary", visible=False
+        options=["PCA", "UMAP"], value="PCA", button_type="primary", button_style="outline",
+        sizing_mode="stretch_width",
     )
-    x_axis = pn.widgets.Select(name="X axis component", options={}, visible=False)
-    y_axis = pn.widgets.Select(name="Y axis component", options={}, visible=False)
-    count_label = pn.pane.Markdown("")
+    x_axis = pn.widgets.Select(name="X axis", options={}, sizing_mode="stretch_width")
+    y_axis = pn.widgets.Select(name="Y axis", options={}, sizing_mode="stretch_width")
+    # Hidden until there's an embedding to look at.
+    view_controls = pn.Column(
+        section_label("Embedding"),
+        embedding_kind, pn.Row(x_axis, y_axis, sizing_mode="stretch_width", margin=0),
+        visible=False, sizing_mode="stretch_width", margin=0,
+    )
+    plot_header = pn.pane.HTML(_EMPTY_HEADER, sizing_mode="stretch_width", margin=(6, 10, 0, 10),
+                               styles={"font-size": "14px", "line-height": "1.5"})
 
     fig = figure(
-        title="Embedding", tools="pan,wheel_zoom,box_zoom,reset,save",
+        title=None, tools="pan,wheel_zoom,box_zoom,reset,save",
         sizing_mode="stretch_both", background_fill_color=spatial_plot.BG_FIELD,
     )
     fig.xgrid.visible = False
@@ -119,8 +131,11 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         return colors
 
     def _update_count(colors, n):
-        n_shown = int(np.sum(np.asarray(colors) != GRAY))
-        count_label.object = f"**{n_shown:,}** / {n:,} cells highlighted"
+        header = f"{n:,} cells · {embedding_kind.value} · {controls.coloring_summary_html()}"
+        if controls.mode.value == "Field" and controls.field_select.value:
+            n_shown = int(np.sum(np.asarray(colors) != GRAY))
+            header += f" · <b>{n_shown:,}</b> of {n:,} cells in the selected categories"
+        plot_header.object = header
 
     def redraw_full(*events):
         """Full repaint: x/y positions genuinely change (new dataset, new axis
@@ -162,10 +177,10 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         state.embedding = ds
         with pn.io.hold():
             controls.refresh_for_dataset()
-            embedding_kind.visible = True
-            x_axis.visible = True
-            y_axis.visible = True
+            view_controls.visible = True
+            controls.layout.visible = True
             recompute_btn.visible = True
+            source_card.collapsed = True  # done loading - make room for the coloring
             refresh_axis_options()
             redraw_full()
         status.object = f"**Active embedding source:** {label} ({ds.adata.n_obs:,} cells)"
@@ -253,24 +268,28 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     x_axis.param.watch(redraw_full, "value")
     y_axis.param.watch(redraw_full, "value")
 
-    sidebar = pn.Column(
-        "### Companion scRNA / snRNA data",
+    source_card = pn.Card(
+        "Load a companion scRNA / snRNA file:",
         # Browse next to Load rather than next to the input - the sidebar is too narrow
         # for input + button side by side.
-        path_input, pn.Row(browse_btn, load_btn), load_progress,
+        path_input, pn.Row(browse_btn, load_btn),
         pn.layout.Divider(),
         "**PCA / UMAP settings**",
         pn.Row(n_pcs_input, n_neighbors_input),
         compute_btn,
         recompute_btn,
-        compute_progress,
+        title="Data source & PCA / UMAP", collapsed=False, sizing_mode="stretch_width", margin=(4, 5),
+    )
+    controls.layout.visible = False  # nothing to color until an embedding is active
+    sidebar = pn.Column(
         status,
-        pn.layout.Divider(),
-        embedding_kind, x_axis, y_axis,
-        count_label,
-        pn.layout.Divider(),
+        load_progress,
+        compute_progress,
+        source_card,
+        view_controls,
         controls.layout,
         width=380,
         sizing_mode="stretch_height",
     )
-    return pn.Row(sidebar, bokeh_pane, sizing_mode="stretch_both")
+    plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
+    return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
