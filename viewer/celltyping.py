@@ -72,10 +72,15 @@ def tissue_options(markers: pd.DataFrame) -> list[str]:
 
 
 def guess_species(var_names) -> str:
-    """'mouse' if gene symbols are mostly mouse-cased (Col1a1), else 'human' (COL1A1)."""
+    """'mouse' if gene symbols are mostly mouse-cased (Col1a1), else 'human' (COL1A1).
+    Ensembl IDs are recognised by prefix (ENSMUSG = mouse, ENSG = human)."""
     names = [str(v) for v in var_names[:2000] if any(ch.isalpha() for ch in str(v))]
     if not names:
         return "human"
+    ensembl_mouse = sum(n.upper().startswith("ENSMUS") for n in names)
+    ensembl_human = sum(n.upper().startswith("ENSG") for n in names)
+    if ensembl_mouse + ensembl_human > len(names) / 2:
+        return "mouse" if ensembl_mouse > ensembl_human else "human"
     mouse_like = sum(n[0].isupper() and n[1:] != n[1:].upper() for n in names if len(n) > 1)
     return "mouse" if mouse_like > len(names) / 2 else "human"
 
