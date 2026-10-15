@@ -18,7 +18,7 @@ import scanpy as sc
 from bokeh.models import ColumnDataSource
 from bokeh.plotting import figure
 
-from . import clustering, spatial_plot
+from . import clustering, hover, spatial_plot
 from .color_controls import ColorControls, section_label
 from .colors import GRAY
 from .file_picker import build_path_picker, remember_folder_of
@@ -88,8 +88,9 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     )
     fig.xgrid.visible = False
     fig.ygrid.visible = False
-    source = ColumnDataSource(data={"x": [], "y": [], "fill_color": []})
-    fig.scatter("x", "y", source=source, fill_color="fill_color", line_color=None, size=5, alpha=0.85)
+    source = ColumnDataSource(data={"x": [], "y": [], "fill_color": [], **hover.empty_columns(0)})
+    scatter = fig.scatter("x", "y", source=source, fill_color="fill_color", line_color=None, size=5, alpha=0.85)
+    hover_formatter = hover.add_hover(fig, [scatter], source)
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
 
     def update_background():
@@ -145,7 +146,10 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         xi = x_axis.value if x_axis.value is not None else 0
         yi = y_axis.value if y_axis.value is not None else min(1, mat.shape[1] - 1)
         colors = _current_colors(mat)
-        source.data = {"x": mat[:, xi], "y": mat[:, yi], "fill_color": list(colors)}
+        hover_cols, hover_meta = controls.hover_data()
+        source.data = {"x": mat[:, xi], "y": mat[:, yi], "fill_color": list(colors),
+                       **hover.empty_columns(mat.shape[0]), **hover_cols}
+        hover.set_meta(hover_formatter, hover_meta)
         update_background()
         _update_count(colors, mat.shape[0])
 
@@ -158,6 +162,10 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         colors = _current_colors(mat)
         source.data["fill_color"] = list(colors)
+        hover_cols, hover_meta = controls.hover_data()
+        for key, values in hover_cols.items():
+            source.data[key] = values
+        hover.set_meta(hover_formatter, hover_meta)
         update_background()
         _update_count(colors, mat.shape[0])
 

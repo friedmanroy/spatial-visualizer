@@ -472,6 +472,65 @@ class ColorControls:
             })
         return colors
 
+    def hover_data(self, idx: np.ndarray | None = None, binning=None) -> tuple[dict, dict]:
+        """(hover columns to put in the plot's data source, meta for the tooltip's JS) -
+        one value per drawn point: every cell, the cells `idx`, or `binning`'s bins.
+        Only the columns the current mode uses are returned. See viewer/hover.py."""
+        dataset = self.get_dataset()
+        if dataset is None:
+            return {}, {"kind": "none"}
+        binned = binning is not None
+        cols = {"hv_n": binning.counts.astype(np.int32)} if binned else {}
+        take = (lambda a: a) if idx is None else (lambda a: a[idx])
+        if self.mode.value == "Field":
+            field = self.field_select.value
+            if not field:
+                return cols, {"kind": "none"}
+            spec = dataset.classify(field)
+            codes = take(spec.codes)
+            conf_col = f"{field}_confidence"
+            has_conf = conf_col in dataset.adata.obs.columns
+            conf = take(dataset.adata.obs[conf_col].to_numpy(dtype=np.float32)) if has_conf else None
+            if binned:  # as drawn: the most common *selected* category of each bin
+                active = self._active_labels()
+                active_codes = np.array([c in active for c in spec.categories] + [False])
+                codes = np.where(active_codes[codes], codes, -1)
+                maj, share = binning.majority_share(codes)
+                cols["hv_share"] = share.astype(np.float32)
+                if has_conf:  # mean confidence of the bin's cells that have its type
+                    agree = (codes == maj[binning.cell_bin]) & ~np.isnan(conf)
+                    n = np.bincount(binning.cell_bin, weights=agree, minlength=binning.n_bins)
+                    tot = np.bincount(binning.cell_bin, weights=np.where(agree, conf, 0), minlength=binning.n_bins)
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        conf = np.where(n > 0, tot / n, np.nan)
+                codes = maj
+            cols["hv_code"] = codes.astype(np.int32)
+            if has_conf:
+                cols["hv_conf"] = np.asarray(conf, dtype=np.float32)
+            meta = {"kind": "field", "field": field, "labels": list(spec.categories),
+                    "has_conf": has_conf, "binned": binned}
+            return cols, meta
+        is_gene = self.expr_mode.value == "Gene"
+        mask = self.category_filter_mask()
+        pathways = self.get_pathways()
+        channels = []
+        for label, w in self.channel_widgets.items():
+            name = w["gene"].value.strip() if is_gene else w["pathway"].value
+            values = None
+            if name:
+                values = (dataset.gene_values(name) if is_gene
+                          else pathways_mod.score_pathway(dataset, name, pathways))
+            if values is None:
+                continue
+            values = np.asarray(values, dtype=np.float32)
+            if binned:
+                values = binning.mean(take(values), None if mask is None else take(mask))
+            else:
+                values = take(np.where(mask, values, np.nan) if mask is not None else values)
+            cols[f"hv_{label.lower()}"] = np.asarray(values, dtype=np.float32)
+            channels.append([label, name])
+        return cols, {"kind": "channels" if channels else "none", "channels": channels, "binned": binned}
+
     def category_filter(self) -> tuple[str, int, int] | None:
         """(field, number of selected categories, number of categories) when some
         categories of the current field are deselected, else None (nothing filtered)."""

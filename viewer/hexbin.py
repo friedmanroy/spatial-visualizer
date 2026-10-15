@@ -43,16 +43,24 @@ class HexBinning:
 
     def majority(self, codes: np.ndarray) -> np.ndarray:
         """Most common non-negative code in each bin (-1 for bins with none)."""
+        return self.majority_share(codes)[0]
+
+    def majority_share(self, codes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(most common non-negative code per bin or -1, and the fraction of the bin's
+        cells that have it - NaN for bins without any)."""
         valid = codes >= 0
         if not valid.any():
-            return np.full(self.n_bins, -1, dtype=np.int32)
+            return np.full(self.n_bins, -1, dtype=np.int32), np.full(self.n_bins, np.nan)
         tally = sp.csr_matrix(
             (np.ones(int(valid.sum())), (self.cell_bin[valid], codes[valid])),
             shape=(self.n_bins, int(codes.max()) + 1),
         )
         result = np.asarray(tally.argmax(axis=1)).ravel().astype(np.int32)
-        result[tally.getnnz(axis=1) == 0] = -1
-        return result
+        share = np.asarray(tally.max(axis=1).todense()).ravel() / self.counts
+        empty = tally.getnnz(axis=1) == 0
+        result[empty] = -1
+        share[empty] = np.nan
+        return result, share
 
 
 def default_width_factor(n_cells: int) -> float:

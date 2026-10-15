@@ -91,20 +91,26 @@ def results_html(result: celltyping.CellTypingResult) -> str:
             label = f'<span style="color:#888">{label}</span>'
         score = f"{best[1]:.1f}" if best else ""
         others = ", ".join(f"{html.escape(t)} ({s:.1f})" for t, s, _ in call.candidates[1:])
+        conf = call.mean_confidence
+        conf_text = "" if conf != conf else f"{conf:.0%}"  # NaN (Unknown) -> blank
         rows.append(
             f"<tr><td>{html.escape(call.cluster)}</td><td style='text-align:right'>{call.n_cells:,}</td>"
             f"<td><b>{label}</b> <span style='color:#666'>{score}</span>"
-            f"<div style='color:#777;font-size:11px'>{others}</div></td></tr>"
+            f"<div style='color:#777;font-size:11px'>{others}</div></td>"
+            f"<td style='text-align:right'>{conf_text}</td></tr>"
         )
     return (
         f"<div style='font-size:12px;margin-bottom:4px'><b>Suggested cell types</b> "
         f"(<code>{html.escape(result.column)}</code>) - {html.escape(result.tissue)}, "
         f"{result.species}, {result.n_types_scored} cell types scored. Score = how strongly the "
-        f"type's markers stand out in that cluster; gray lines are the next-best types.</div>"
+        f"type's markers stand out in that cluster; gray lines are the next-best types. "
+        f"Confidence = the cluster's mean per-cell confidence (also shown when hovering a "
+        f"cell, and as the field <code>{html.escape(result.confidence_column)}</code>).</div>"
         "<div style='max-height:260px;overflow-y:auto'>"
         "<table style='font-size:12px;border-collapse:collapse;width:100%'>"
         "<tr style='text-align:left;border-bottom:1px solid #ddd'><th>Cluster</th>"
-        "<th style='text-align:right'>Cells</th><th style='padding-left:6px'>Suggested type</th></tr>"
+        "<th style='text-align:right'>Cells</th><th style='padding-left:6px'>Suggested type</th>"
+        "<th style='text-align:right'>Confidence</th></tr>"
         + "".join(rows).replace("<td><b>", "<td style='padding-left:6px'><b>")
         + "</table></div>"
     )

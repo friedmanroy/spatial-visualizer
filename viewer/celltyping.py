@@ -5,7 +5,12 @@ Each cluster is summarised by its cells' mean expression; every gene is then
 standardised across clusters, so a marker set scores high in a cluster where its genes
 are *relatively* high. decoupler's univariate linear model (ULM) scores each PanglaoDB
 cell type against each cluster, and the best-scoring type is suggested - or "Unknown"
-when no type scores significantly. These are suggestions to check against known
+when no type scores significantly.
+
+Each cell also gets a confidence (0-1) in its cluster's suggested type: the same ULM
+scores computed per cell, turned into shares with a softmax over all scored types -
+near 1 when the cell's markers clearly point to that type, low when another type's
+markers fit it as well or better. These are suggestions to check against known
 markers, not a validated annotation.
 
 PanglaoDB is downloaded once (through OmniPath) and kept in cache/ for offline use.
@@ -102,12 +107,14 @@ class ClusterCall:
     n_cells: int
     label: str  # suggested cell type, or UNKNOWN
     candidates: list[tuple[str, float, int]] = field(default_factory=list)  # (type, score, markers measured)
+    mean_confidence: float = float("nan")  # mean per-cell confidence in `label` (NaN if Unknown)
 
 
 @dataclass
 class CellTypingResult:
     cluster_col: str
     column: str  # obs column holding each cell's suggested type
+    confidence_column: str  # obs column holding each cell's confidence (0-1) in that type
     species: str
     tissue: str
     n_types_scored: int
@@ -174,4 +181,45 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
     cell_labels = np.array([label_of.get(str(v)) if v == v else None for v in clusters.to_numpy()], dtype=object)
     present = sorted({c.label for c in calls} - {UNKNOWN}) + ([UNKNOWN] if UNKNOWN in label_of.values() else [])
     adata.obs[column] = pd.Categorical(cell_labels, categories=present)
-    return CellTypingResult(cluster_col, column, species, tissue, int(net["source"].nunique()), calls)
+
+    confidence = _cell_confidence(dc, adata, genes, net, cell_labels)
+    confidence_column = f"{column}_confidence"
+    adata.obs[confidence_column] = confidence
+    for i, call in enumerate(calls):
+        in_cluster = codes == i
+        if call.label != UNKNOWN and in_cluster.any():
+            call.mean_confidence = float(np.nanmean(confidence[in_cluster]))
+    return CellTypingResult(cluster_col, column, confidence_column, species, tissue,
+                            int(net["source"].nunique()), calls)
+
+
+def _cell_confidence(dc, adata, genes: list[str], net: pd.DataFrame, cell_labels: np.ndarray) -> np.ndarray:
+    """Per cell: softmax share of its assigned type among all scored types' per-cell ULM
+    scores (NaN for cells without a type). Genes are divided by their spread across
+    cells (not centred, so sparse data stays sparse) so no gene dominates by scale."""
+    import anndata as ad
+
+    X = adata[:, genes].X
+    X = sp.csr_matrix(X, dtype=np.float32) if sp.issparse(X) else np.asarray(X, dtype=np.float32)
+    mean = np.asarray(X.mean(axis=0)).ravel()
+    mean_sq = np.asarray((X.multiply(X) if sp.issparse(X) else X * X).mean(axis=0)).ravel()
+    spread = np.sqrt(np.maximum(mean_sq - mean ** 2, 0))
+    spread[spread == 0] = 1.0
+    X = X @ sp.diags(1.0 / spread) if sp.issparse(X) else X / spread
+    cells = ad.AnnData(sp.csr_matrix(X) if sp.issparse(X) else X)
+    cells.var_names = genes
+    # Batches keep memory bounded on million-cell data (each batch is densified).
+    dc.mt.ulm(data=cells, net=net, tmin=MIN_MARKERS, bsize=50_000)
+    scores = cells.obsm["score_ulm"]
+    S = np.nan_to_num(scores.to_numpy(dtype=np.float64))
+    S -= S.max(axis=1, keepdims=True)
+    share = np.exp(S)
+    share /= share.sum(axis=1, keepdims=True)
+
+    type_index = {t: j for j, t in enumerate(scores.columns)}
+    confidence = np.full(adata.n_obs, np.nan, dtype=np.float32)
+    for label in set(cell_labels) - {None, UNKNOWN}:
+        if label in type_index:
+            rows = np.flatnonzero(cell_labels == label)
+            confidence[rows] = share[rows, type_index[label]]
+    return confidence

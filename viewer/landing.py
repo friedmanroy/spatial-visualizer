@@ -182,7 +182,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
             if typing.enabled.value:
                 try:
-                    new_fields.append((await typing.annotate(ds, col)).column)
+                    result = await typing.annotate(ds, col)
+                    new_fields += [result.column, result.confidence_column]
                 except Exception as exc:  # the clustering itself still worked - carry on
                     traceback.print_exc(file=sys.stderr)
                     open_status.object += f" **Cell typing failed:** {exc}"

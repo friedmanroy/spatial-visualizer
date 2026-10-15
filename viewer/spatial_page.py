@@ -11,7 +11,7 @@ import numpy as np
 import panel as pn
 from bokeh.models import ColumnDataSource
 
-from . import clustering, hexbin, spatial_plot
+from . import clustering, hexbin, hover, spatial_plot
 from .color_controls import ColorControls
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
@@ -69,7 +69,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     initial_sample = dataset.sample_ids[0]
     idx0, coords0, lattice0, _ = get_display(initial_sample)
-    source = ColumnDataSource(data={"x": coords0[:, 0], "y": coords0[:, 1], "fill_color": [GRAY] * len(coords0)})
+    source = ColumnDataSource(data={
+        "x": coords0[:, 0], "y": coords0[:, 1], "fill_color": [GRAY] * len(coords0),
+        **hover.empty_columns(len(coords0)),
+    })
 
     marker_shape = pn.widgets.Select(
         name="Cell shape", options=[spatial_plot.AUTO_SHAPE, *spatial_plot.MARKER_SHAPES],
@@ -92,6 +95,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         "Squares": fig.rect(**spatial_plot.marker_props("Squares", lattice0), **glyph_kwargs),
         "Circles": fig.circle(**spatial_plot.marker_props("Circles", lattice0), **glyph_kwargs),
     }
+    hover_formatter = hover.add_hover(fig, renderers.values(), source)
 
     def update_markers(lattice):
         if bin_toggle.value:
@@ -212,7 +216,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     def redraw_full(sample_id: str):
         idx, coords, lattice, binning = get_display(sample_id)
         colors = current_colors(idx, binning)
-        source.data = {"x": coords[:, 0], "y": coords[:, 1], "fill_color": list(colors)}
+        hover_cols, hover_meta = controls.hover_data(idx, binning)
+        source.data = {"x": coords[:, 0], "y": coords[:, 1], "fill_color": list(colors),
+                       **hover.empty_columns(len(coords)), **hover_cols}
+        hover.set_meta(hover_formatter, hover_meta)
         update_markers(lattice)
         update_background()
         update_count(colors, idx, binning)
@@ -223,6 +230,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         # Item assignment (vs. reassigning the whole `.data` dict) makes Bokeh patch
         # just the fill_color column instead of re-sending the unchanged x/y positions.
         source.data["fill_color"] = list(colors)
+        hover_cols, hover_meta = controls.hover_data(idx, binning)
+        for key, values in hover_cols.items():
+            source.data[key] = values
+        hover.set_meta(hover_formatter, hover_meta)
         update_background()
         update_count(colors, idx, binning)
 
@@ -291,6 +302,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         try:
             result = await typing.annotate(dataset, cluster_col)
             async with state.busy.show("Coloring by the suggested cell types..."):
+                add_and_announce_field(result.confidence_column, select=False)
                 add_and_announce_field(result.column, select=True)
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
