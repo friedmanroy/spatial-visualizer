@@ -1,5 +1,5 @@
 """The 'scRNA / snRNA' tab: load a companion dataset, or compute PCA/UMAP on demand
-from the spatial data, and browse up to the first 10 components on either axis.
+from the spatial data, and browse up to the first 10 PCs (or the 3 UMAP components) on either axis.
 
 PCA/UMAP are always computed with scanpy's own tools (`sc.pp.pca`, `sc.pp.neighbors`,
 `sc.tl.umap`); the number of PCs and neighbors are user-configurable and trigger a
@@ -26,6 +26,9 @@ from .state import Dataset
 
 DEFAULT_N_PCS = clustering.DEFAULT_N_PCS
 DEFAULT_N_NEIGHBORS = clustering.DEFAULT_N_NEIGHBORS
+#: UMAP is only computed in 3 dimensions (vs. up to 10 PCs) - much faster, and the
+#: extra UMAP dimensions are rarely looked at anyway
+UMAP_COMPONENTS = 3
 _EMPTY_HEADER = (
     "<i>No embedding yet: load a companion scRNA / snRNA file, or compute PCA / UMAP "
     "from the spatial data, in the panel on the left.</i>"
@@ -43,7 +46,7 @@ def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int):
     embedding, since this is called specifically when the user (re)requests a computation."""
     adata = dataset.adata
     tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors)
-    sc.tl.umap(tmp, n_components=tmp.obsm["X_pca"].shape[1])
+    sc.tl.umap(tmp, n_components=UMAP_COMPONENTS)
     adata.obsm["X_umap"] = tmp.obsm["X_umap"]
 
 

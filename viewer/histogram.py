@@ -1,4 +1,5 @@
-"""Small gene/pathway-score distribution histograms, rendered as embedded PNGs -
+"""Small gene/pathway-score distribution histograms, rendered as embedded SVGs (vector, so the axis numbers stay sharp at any screen
+resolution or zoom, unlike a small PNG stretched to the sidebar's width) -
 mirrors the TNBC viewer's per-channel "current view vs whole dataset" histogram.
 """
 from __future__ import annotations
@@ -39,13 +40,13 @@ def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None,
     ax.hist(local_values, bins=bin_edges, color=color, alpha=0.8, density=True, label="shown")
 
     ax.set_yticks([])
-    ax.tick_params(axis="x", labelsize=6, length=2)
+    ax.tick_params(axis="x", labelsize=7, length=2)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     fig.tight_layout(pad=0.2)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", transparent=True)
+    fig.savefig(buf, format="svg", transparent=True)
     plt.close(fig)
     b64 = base64.b64encode(buf.getvalue()).decode()
-    return f'<img src="data:image/png;base64,{b64}" style="width:100%;height:{HEIGHT_PX}px;display:block" />'
+    return f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:{HEIGHT_PX}px;display:block" />'
