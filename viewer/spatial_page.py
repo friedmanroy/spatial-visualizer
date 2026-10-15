@@ -276,11 +276,15 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 if bin_toggle.value:
                     col, n_bins = await asyncio.to_thread(
                         clustering.run_leiden_on_hexbins, dataset, bin_width.value, leiden_resolution.value,
+                        report=state.busy.step,
                     )
                     clustered = f"{n_bins:,} hex bins"
                 else:
-                    col = await asyncio.to_thread(clustering.run_leiden, dataset.adata, leiden_resolution.value)
+                    col = await asyncio.to_thread(
+                        clustering.run_leiden, dataset.adata, leiden_resolution.value, report=state.busy.step,
+                    )
                     clustered = f"{dataset.adata.n_obs:,} cells"
+                await state.busy.step_now("Coloring the plot by the new clusters")
                 add_and_announce_field(col, select=True)
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
@@ -302,6 +306,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         try:
             result = await typing.annotate(dataset, cluster_col)
             async with state.busy.show("Coloring by the suggested cell types..."):
+                await state.busy.step_now("Adding the cell-type and confidence fields")
                 add_and_announce_field(result.confidence_column, select=False)
                 add_and_announce_field(result.column, select=True)
         except Exception as exc:

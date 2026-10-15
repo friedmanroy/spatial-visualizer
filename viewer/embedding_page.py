@@ -41,11 +41,12 @@ def _has_embedding(adata) -> bool:
     return have_pca and have_umap
 
 
-def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int):
+def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int, report=clustering._no_report):
     """(Re)computes obsm['X_pca']/['X_umap'] via scanpy. Always overwrites any existing
     embedding, since this is called specifically when the user (re)requests a computation."""
     adata = dataset.adata
-    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors)
+    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors, report)
+    report(f"Computing UMAP ({UMAP_COMPONENTS} components - the first one in a session also compiles, ~20 s extra)")
     sc.tl.umap(tmp, n_components=UMAP_COMPONENTS)
     adata.obsm["X_umap"] = tmp.obsm["X_umap"]
 
@@ -205,15 +206,15 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         try:
             async with busy.show("Loading file...", path):
+                busy.step("Reading the .h5ad file")
                 adata = await asyncio.to_thread(sc.read_h5ad, path)
                 if "spatial" not in adata.obsm:
-                    busy.update("Normalizing expression...", "normalize_total + log1p, if the data is raw counts")
+                    busy.step(f"Normalizing {adata.n_obs:,} cells (normalize_total + log1p, if the data is raw counts)")
                     await asyncio.to_thread(clustering.normalize_if_raw, adata)
                 ds = Dataset(adata, name=os.path.basename(path))
                 remember_folder_of(path)
                 if not _has_embedding(adata):
-                    busy.update("Computing PCA and UMAP...", _embedding_detail(adata.n_obs))
-                    await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                    await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
                 activate_dataset(ds, os.path.basename(path))
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
@@ -227,7 +228,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         try:
             async with busy.show("Computing PCA and UMAP from the spatial data...",
                                  _embedding_detail(ds.adata.n_obs)):
-                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
                 activate_dataset(ds, f"{ds.name} (computed from spatial data)")
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
@@ -239,7 +240,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         try:
             async with busy.show("Recomputing PCA and UMAP...", _embedding_detail(ds.adata.n_obs)):
-                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
                 with pn.io.hold():
                     refresh_axis_options()
                     redraw_full()

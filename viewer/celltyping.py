@@ -138,7 +138,7 @@ def _cluster_means(adata, codes: np.ndarray, n_clusters: int) -> np.ndarray:
 
 
 def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species: str,
-                      tissue: str, include_common: bool = True) -> CellTypingResult:
+                      tissue: str, include_common: bool = True, report=lambda text: None) -> CellTypingResult:
     """Suggests a cell type per cluster of obs[`cluster_col`], stores each cell's
     suggestion as obs[f"{cluster_col}_celltype"], and returns the per-cluster calls."""
     import decoupler as dc
@@ -150,6 +150,7 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
 
     # PanglaoDB uses human symbols; match them to this dataset's own spelling (case-
     # insensitively, which also covers most mouse symbols) and drop unmeasured ones.
+    report("Matching PanglaoDB marker genes to this data's genes")
     net = marker_sets(markers, species, tissue, include_common)
     net["target"] = [dataset.match_gene(g) for g in net["target"]]
     net = net.dropna(subset=["target"]).drop_duplicates()
@@ -163,6 +164,7 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
         )
 
     genes = sorted(set(net["target"]))
+    report(f"Scoring {net['source'].nunique()} cell types in each of the {len(names)} clusters")
     gene_idx = [adata.var_names.get_loc(g) for g in genes]
     means = pd.DataFrame(_cluster_means(adata[:, gene_idx], codes, len(names)), index=names, columns=genes)
     spread = means.std(axis=0)
@@ -187,6 +189,7 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
     present = sorted({c.label for c in calls} - {UNKNOWN}) + ([UNKNOWN] if UNKNOWN in label_of.values() else [])
     adata.obs[column] = pd.Categorical(cell_labels, categories=present)
 
+    report(f"Scoring each cell's confidence in its type ({adata.n_obs:,} cells)")
     confidence = _cell_confidence(dc, adata, genes, net, cell_labels)
     confidence_column = f"{column}_confidence"
     adata.obs[confidence_column] = confidence

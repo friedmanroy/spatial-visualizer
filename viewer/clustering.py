@@ -43,23 +43,31 @@ def normalize_if_raw(adata) -> bool:
     return True
 
 
-def neighbors_graph(adata, n_pcs: int, n_neighbors: int):
+def _no_report(text: str):
+    pass
+
+
+def neighbors_graph(adata, n_pcs: int, n_neighbors: int, report=_no_report):
     """Returns a scaled HVG-subset copy of `adata` with PCA and a neighbor graph
     computed. Also stores the PCA on `adata.obsm['X_pca']`."""
     if "highly_variable" not in adata.var.columns:
         n_top = min(2000, adata.n_vars)
+        report(f"Finding the {n_top:,} most variable genes")
         sc.pp.highly_variable_genes(adata, n_top_genes=n_top, flavor="seurat")
     hvg_mask = adata.var["highly_variable"].to_numpy()
     if hvg_mask.sum() < 2:
         hvg_mask = np.ones(adata.n_vars, dtype=bool)
 
+    report(f"Scaling the expression of {int(hvg_mask.sum()):,} genes in {adata.n_obs:,} cells")
     tmp = adata[:, hvg_mask].copy()
     sc.pp.scale(tmp, max_value=10)
     n_comps = max(2, min(n_pcs, tmp.n_vars - 1, tmp.n_obs - 1))
+    report(f"Computing PCA ({n_comps} components)")
     sc.pp.pca(tmp, n_comps=n_comps, svd_solver="arpack")
     adata.obsm["X_pca"] = tmp.obsm["X_pca"]
 
     n_neigh = max(2, min(n_neighbors, tmp.n_obs - 1))
+    report(f"Building the neighbor graph ({n_neigh} neighbors per cell)")
     sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps)
     return tmp
 
@@ -69,8 +77,9 @@ def leiden_column_name(resolution: float, hex_width: float | None = None) -> str
     return name if hex_width is None else f"{name}_hex{hex_width:g}"
 
 
-def _leiden_labels(adata, resolution: float, n_pcs: int, n_neighbors: int) -> np.ndarray:
-    tmp = neighbors_graph(adata, n_pcs, n_neighbors)
+def _leiden_labels(adata, resolution: float, n_pcs: int, n_neighbors: int, report=_no_report) -> np.ndarray:
+    tmp = neighbors_graph(adata, n_pcs, n_neighbors, report)
+    report(f"Running Leiden (resolution {resolution:g})")
     sc.tl.leiden(tmp, resolution=resolution, key_added="leiden", flavor="igraph",
                  n_iterations=2, directed=False, random_state=0)
     return tmp.obs["leiden"].to_numpy()
@@ -83,22 +92,23 @@ def _as_categorical(labels: np.ndarray) -> pd.Categorical:
 
 
 def run_leiden(adata, resolution: float, n_pcs: int = DEFAULT_N_PCS,
-               n_neighbors: int = DEFAULT_N_NEIGHBORS) -> str:
+               n_neighbors: int = DEFAULT_N_NEIGHBORS, report=_no_report) -> str:
     """Leiden-clusters `adata` and stores the labels as a categorical obs column,
     returning that column's name (one per resolution, so different runs can be compared)."""
     col = leiden_column_name(resolution)
-    adata.obs[col] = _as_categorical(_leiden_labels(adata, resolution, n_pcs, n_neighbors))
+    adata.obs[col] = _as_categorical(_leiden_labels(adata, resolution, n_pcs, n_neighbors, report))
     return col
 
 
 def run_leiden_on_hexbins(dataset, width_factor: float, resolution: float,
                           n_pcs: int = DEFAULT_N_PCS,
-                          n_neighbors: int = DEFAULT_N_NEIGHBORS) -> tuple[str, int]:
+                          n_neighbors: int = DEFAULT_N_NEIGHBORS, report=_no_report) -> tuple[str, int]:
     """Leiden-clusters the hexagonal bins (`width_factor` cell spacings wide) of every
     sample, each bin's profile being its cells' mean expression, then gives every cell
     its bin's cluster. Far faster than per-cell clustering on million-cell data. Stores
     the labels as an obs column and returns (column name, number of bins clustered)."""
     adata = dataset.adata
+    report(f"Averaging expression within hexagonal bins ({len(dataset.sample_ids)} sample(s))")
     profiles, binnings = [], []
     for sid in dataset.sample_ids:
         idx = dataset.sample_indices(sid)
@@ -109,7 +119,8 @@ def run_leiden_on_hexbins(dataset, width_factor: float, resolution: float,
     stacked = sp.vstack(profiles, format="csr") if sp.issparse(profiles[0]) else np.vstack(profiles)
     bins = ad.AnnData(stacked)
     bins.var_names = adata.var_names
-    bin_labels = _leiden_labels(bins, resolution, n_pcs, n_neighbors)
+    bin_labels = _leiden_labels(bins, resolution, n_pcs, n_neighbors, report)
+    report(f"Giving each cell its bin's cluster ({bins.n_obs:,} bins)")
 
     # Cells outside every sample (missing sample value) stay unlabeled.
     cell_labels = np.full(adata.n_obs, None, dtype=object)

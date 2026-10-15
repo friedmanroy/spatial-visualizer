@@ -75,7 +75,7 @@ class CellTypingControls:
         async with self.busy.show("Suggesting cell types...", f"{self.tissue.value}, {species} markers"):
             result = await asyncio.to_thread(
                 celltyping.annotate_clusters, dataset, cluster_col, self._markers,
-                species, self.tissue.value, self.include_common.value,
+                species, self.tissue.value, self.include_common.value, report=self.busy.step,
             )
         dataset.celltype_results[result.column] = result
         return result

@@ -101,6 +101,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
 
     async def _load(path: str):
         try:
+            busy.step("Reading the .h5ad file")
             adata = await asyncio.to_thread(sc.read_h5ad, path)
             if "spatial" not in adata.obsm:
                 status.object = (
@@ -108,7 +109,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                     "spatial data. Pick a different file."
                 )
                 return
-            busy.update("Normalizing expression...", "normalize_total + log1p, if the data is raw counts")
+            busy.step(f"Normalizing {adata.n_obs:,} cells (normalize_total + log1p, if the data is raw counts)")
             normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
@@ -116,7 +117,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             remember_folder_of(path)
             holder["dataset"] = ds
 
-            busy.update("Inspecting obs columns...")
+            busy.step(f"Inspecting the {len(adata.obs.columns)} obs columns to offer as fields")
 
             def _classify_all_columns():
                 for c in adata.obs.columns:
@@ -170,10 +171,12 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                     if on_hexbins:
                         col, _ = await asyncio.to_thread(
                             clustering.run_leiden_on_hexbins, ds, hexbin.default_width_factor(largest),
-                            leiden_resolution.value,
+                            leiden_resolution.value, report=busy.step,
                         )
                     else:
-                        col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
+                        col = await asyncio.to_thread(
+                            clustering.run_leiden, ds.adata, leiden_resolution.value, report=busy.step,
+                        )
             except Exception as exc:
                 traceback.print_exc(file=sys.stderr)
                 open_status.object = f"**Leiden clustering failed:** {exc}"
@@ -199,7 +202,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         state.spatial = ds
         state.pathways_path = pathways_input.value.strip()
         state.pathways = pathways_mod.load_pathways(state.pathways_path)
-        async with busy.show("Opening the viewer...", "measuring each sample's cell layout"):
+        async with busy.show("Opening the viewer...", f"{ds.adata.n_obs:,} cells in {len(ds.sample_ids)} sample(s)"):
+            await busy.step_now("Measuring each sample's cell layout and drawing the first sample")
             on_ready()
 
     load_btn.on_click(on_load)
