@@ -6,7 +6,9 @@ elsewhere for gene-expression coloring) is never mutated by scaling.
 """
 from __future__ import annotations
 
+import anndata as ad
 import numpy as np
+import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
 
@@ -62,18 +64,59 @@ def neighbors_graph(adata, n_pcs: int, n_neighbors: int):
     return tmp
 
 
-def leiden_column_name(resolution: float) -> str:
-    return f"leiden_res{resolution:g}"
+def leiden_column_name(resolution: float, hex_width: float | None = None) -> str:
+    name = f"leiden_res{resolution:g}"
+    return name if hex_width is None else f"{name}_hex{hex_width:g}"
+
+
+def _leiden_labels(adata, resolution: float, n_pcs: int, n_neighbors: int) -> np.ndarray:
+    tmp = neighbors_graph(adata, n_pcs, n_neighbors)
+    sc.tl.leiden(tmp, resolution=resolution, key_added="leiden", flavor="igraph",
+                 n_iterations=2, directed=False, random_state=0)
+    return tmp.obs["leiden"].to_numpy()
+
+
+def _as_categorical(labels: np.ndarray) -> pd.Categorical:
+    """Cluster labels ('0', '1', ... or None) with their categories in numeric order."""
+    present = {label for label in labels if label is not None}
+    return pd.Categorical(labels, categories=sorted(present, key=int))
 
 
 def run_leiden(adata, resolution: float, n_pcs: int = DEFAULT_N_PCS,
                n_neighbors: int = DEFAULT_N_NEIGHBORS) -> str:
     """Leiden-clusters `adata` and stores the labels as a categorical obs column,
     returning that column's name (one per resolution, so different runs can be compared)."""
-    tmp = neighbors_graph(adata, n_pcs, n_neighbors)
     col = leiden_column_name(resolution)
-    sc.tl.leiden(tmp, resolution=resolution, key_added=col, flavor="igraph",
-                 n_iterations=2, directed=False, random_state=0)
-    adata.obs[col] = tmp.obs[col].to_numpy()
-    adata.obs[col] = adata.obs[col].astype("category")
+    adata.obs[col] = _as_categorical(_leiden_labels(adata, resolution, n_pcs, n_neighbors))
     return col
+
+
+def run_leiden_on_hexbins(dataset, width_factor: float, resolution: float,
+                          n_pcs: int = DEFAULT_N_PCS,
+                          n_neighbors: int = DEFAULT_N_NEIGHBORS) -> tuple[str, int]:
+    """Leiden-clusters the hexagonal bins (`width_factor` cell spacings wide) of every
+    sample, each bin's profile being its cells' mean expression, then gives every cell
+    its bin's cluster. Far faster than per-cell clustering on million-cell data. Stores
+    the labels as an obs column and returns (column name, number of bins clustered)."""
+    adata = dataset.adata
+    profiles, binnings = [], []
+    for sid in dataset.sample_ids:
+        idx = dataset.sample_indices(sid)
+        binning = dataset.hex_binning(sid, width_factor)
+        mean = binning.mean_matrix @ adata.X[idx]
+        profiles.append(sp.csr_matrix(mean) if sp.issparse(mean) else np.asarray(mean))
+        binnings.append((idx, binning))
+    stacked = sp.vstack(profiles, format="csr") if sp.issparse(profiles[0]) else np.vstack(profiles)
+    bins = ad.AnnData(stacked)
+    bins.var_names = adata.var_names
+    bin_labels = _leiden_labels(bins, resolution, n_pcs, n_neighbors)
+
+    # Cells outside every sample (missing sample value) stay unlabeled.
+    cell_labels = np.full(adata.n_obs, None, dtype=object)
+    offset = 0
+    for idx, binning in binnings:
+        cell_labels[idx] = bin_labels[offset + binning.cell_bin]
+        offset += binning.n_bins
+    col = leiden_column_name(resolution, width_factor)
+    adata.obs[col] = _as_categorical(cell_labels)
+    return col, bins.n_obs

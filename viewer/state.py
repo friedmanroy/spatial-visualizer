@@ -10,6 +10,8 @@ import scanpy as sc
 import scipy.sparse as sp
 
 from . import fields as fields_mod
+from . import hexbin
+from . import spatial_plot
 
 
 class Dataset:
@@ -25,6 +27,8 @@ class Dataset:
         self.sample_col: str | None = None
         self.sample_ids: list[str] = []
         self._sample_indices: dict[str, np.ndarray] = {}
+        self._lattice_cache: dict[str, spatial_plot.Lattice] = {}
+        self._binning_cache: dict[tuple[str, float], hexbin.HexBinning] = {}
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
         self._var_upper_lookup: dict[str, str] | None = None
@@ -65,6 +69,8 @@ class Dataset:
     def set_sample_column(self, colname: str | None):
         self.sample_col = colname
         self._sample_indices = {}
+        self._lattice_cache = {}
+        self._binning_cache = {}
         if colname is None:
             self.sample_ids = ["all cells"]
             self._sample_indices["all cells"] = np.arange(self.adata.n_obs)
@@ -78,6 +84,26 @@ class Dataset:
 
     def sample_indices(self, sample_id: str) -> np.ndarray:
         return self._sample_indices[sample_id]
+
+    def sample_coords(self, sample_id: str) -> np.ndarray:
+        return self.adata.obsm["spatial"][self.sample_indices(sample_id)]
+
+    def largest_sample_size(self) -> int:
+        return max(len(idx) for idx in self._sample_indices.values())
+
+    def sample_lattice(self, sample_id: str) -> spatial_plot.Lattice:
+        if sample_id not in self._lattice_cache:
+            self._lattice_cache[sample_id] = spatial_plot.estimate_lattice(self.sample_coords(sample_id))
+        return self._lattice_cache[sample_id]
+
+    def hex_binning(self, sample_id: str, width_factor: float) -> hexbin.HexBinning:
+        """Hexagonal bins `width_factor` cell spacings wide over one sample's cells
+        (shared by the Spatial view and hexagon-level Leiden clustering)."""
+        key = (sample_id, width_factor)
+        if key not in self._binning_cache:
+            width = width_factor * self.sample_lattice(sample_id).spacing
+            self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
+        return self._binning_cache[key]
 
     # -- gene expression -------------------------------------------------------
     def match_gene(self, gene: str) -> str | None:

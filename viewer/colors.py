@@ -70,16 +70,17 @@ def assign_sequential_colors(labels: list[str]) -> dict[str, str]:
     return dict(zip(labels, palette))
 
 
-def field_fill_colors(field_spec, active_labels: set[str]) -> np.ndarray:
+def field_fill_colors(field_spec, active_labels: set[str], codes: np.ndarray | None = None) -> np.ndarray:
     """Vectorized per-cell hex color array for a categorical/binned FieldSpec.
 
     Rows whose category/bin is not in ``active_labels`` (or missing) are gray.
+    ``codes`` overrides the spec's own per-cell codes (e.g. per-hex-bin codes).
     """
     categories = field_spec.categories
     lut = [field_spec.colors.get(c, GRAY) if c in active_labels else GRAY for c in categories]
     lut.append(GRAY)  # code == -1 (missing) maps here
     lut_arr = np.array(lut, dtype=object)
-    codes = field_spec.codes
+    codes = field_spec.codes if codes is None else codes
     idx = np.where(codes < 0, len(categories), codes)
     return lut_arr[idx]
 

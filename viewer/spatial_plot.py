@@ -35,6 +35,9 @@ _FIRST_RING = 1.2
 #: how close to perfect (1) the 6-fold / 4-fold bond order must be to call a lattice
 #: hexagonal / square; lower values tolerate more positional jitter.
 _ORDER_THRESHOLD = 0.7
+#: spacing/orientation are estimated from at most this many cells' neighborhoods (each
+#: still looked up among *all* cells), which keeps million-cell samples fast
+_MAX_LATTICE_QUERIES = 50_000
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,11 @@ def estimate_lattice(coords: np.ndarray) -> Lattice:
     if n < 2:
         return Lattice(1.0, 0.0, 0.0, "Circles")
     nn = NearestNeighbors(n_neighbors=min(7, n)).fit(coords)  # self + up to 6 (hex) neighbors
-    dist, ind = nn.kneighbors(coords)
+    if n > _MAX_LATTICE_QUERIES:
+        query = np.random.default_rng(0).choice(n, _MAX_LATTICE_QUERIES, replace=False)
+    else:
+        query = np.arange(n)
+    dist, ind = nn.kneighbors(coords[query])
     dist, ind = dist[:, 1:], ind[:, 1:]
     d = dist[:, 0]
     positive = d[d > 0]  # duplicate positions would otherwise give a zero spacing
@@ -82,7 +89,7 @@ def estimate_lattice(coords: np.ndarray) -> Lattice:
 
     ring = (dist > 0) & (dist < _FIRST_RING * spacing)
     rows, cols = np.nonzero(ring)
-    vec = coords[ind[rows, cols]] - coords[rows]
+    vec = coords[ind[rows, cols]] - coords[query[rows]]
     # Bokeh angles are counter-clockwise on screen, and the figure's y axis is flipped.
     phi = np.arctan2(-vec[:, 1], vec[:, 0])
     hex_order, hex_angle = _bond_order(phi, 6)

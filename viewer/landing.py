@@ -11,7 +11,7 @@ import traceback
 import panel as pn
 import scanpy as sc
 
-from . import clustering
+from . import clustering, hexbin
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .file_picker import build_path_picker
@@ -149,12 +149,23 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
+        # Set first: hexagon-level clustering bins each sample separately.
+        sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
+        ds.set_sample_column(sample_col)
         if leiden_checkbox.value:
             open_btn.disabled = True
             open_progress.visible = True
             open_status.object = "Running Leiden clustering (this can take a while for large files)..."
+            largest = ds.largest_sample_size()
             try:
-                col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
+                # Huge samples open hex-binned in the viewer, so cluster those same bins.
+                if largest > hexbin.BINNING_THRESHOLD:
+                    col, _ = await asyncio.to_thread(
+                        clustering.run_leiden_on_hexbins, ds, hexbin.default_width_factor(largest),
+                        leiden_resolution.value,
+                    )
+                else:
+                    col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
             except Exception as exc:
                 traceback.print_exc(file=sys.stderr)
                 open_status.object = f"**Leiden clustering failed:** {exc}"
@@ -165,8 +176,6 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             ds.add_field(col)  # always offered for coloring, even if not checked above
             holder["field_checkboxes"].setdefault(col, pn.widgets.Checkbox(name=col, value=True)).value = True
             open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
-        sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
-        ds.set_sample_column(sample_col)
         field_checkboxes = holder["field_checkboxes"]
         enabled = {f for f, cb in field_checkboxes.items() if cb.value}
         ds.allowed_fields = enabled if enabled != set(field_checkboxes) else None

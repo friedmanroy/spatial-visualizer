@@ -298,17 +298,25 @@ class ColorControls:
         with pn.io.hold():
             self.on_change()
 
-    def compute_colors(self) -> np.ndarray:
+    def compute_colors(self, idx: np.ndarray | None = None, binning=None) -> np.ndarray:
+        """Hex colors for every cell, or - given a sample's cell indices `idx` and its
+        hexbin.HexBinning - for every bin of that sample: the bin's mean gene/pathway
+        value, or its most common category among the selected ones."""
         dataset = self.get_dataset()
         if dataset is None:
             return np.array([], dtype=object)
-        n = dataset.adata.n_obs
+        n = dataset.adata.n_obs if binning is None else binning.n_bins
         if self.mode.value == "Field":
             if not self.field_select.value:
                 return np.full(n, GRAY, dtype=object)
             spec = dataset.classify(self.field_select.value)
             active = self._active_labels()
-            return colors_mod.field_fill_colors(spec, active)
+            if binning is None:
+                return colors_mod.field_fill_colors(spec, active)
+            active_codes = np.array([c in active for c in spec.categories] + [False])
+            codes = spec.codes[idx]
+            codes = np.where(active_codes[codes], codes, -1)  # code -1 hits the trailing False
+            return colors_mod.field_fill_colors(spec, active, binning.majority(codes))
         is_gene = self.expr_mode.value == "Gene"
         channels = {}
         channel_values = {}
@@ -325,6 +333,11 @@ class ColorControls:
             channel_values[label] = values
         self._update_pathway_info(pathways, is_gene)
         self._update_histograms(channel_values)
+        if binning is not None:
+            channels = {
+                label: (None if values is None else binning.mean(values[idx]), bipolar)
+                for label, (values, bipolar) in channels.items()
+            }
         return colors_mod.compute_rgb_colors(n, channels)
 
     def _update_histograms(self, channel_values: dict[str, np.ndarray | None]):
