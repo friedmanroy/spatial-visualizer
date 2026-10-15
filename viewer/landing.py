@@ -25,11 +25,9 @@ DEFAULT_PATHWAYS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def build_landing(state, on_ready) -> pn.viewable.Viewable:
-    path_input, _, path_picker = build_path_picker("Spatial .h5ad path")
+    busy = state.busy
+    path_input, _, path_picker = build_path_picker("Spatial .h5ad path", busy=busy)
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
-    load_progress = pn.indicators.Progress(
-        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
-    )
     status = pn.pane.Markdown("")
 
     sample_col_select = pn.widgets.Select(
@@ -58,13 +56,10 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     leiden_checkbox.param.watch(lambda e: setattr(leiden_resolution, "visible", e.new), "value")
 
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
-    open_progress = pn.indicators.Progress(
-        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
-    )
     open_status = pn.pane.Markdown("")
     step2 = pn.Column(
         sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_resolution,
-        open_btn, open_progress, open_status, visible=False,
+        open_btn, open_status, visible=False,
     )
 
     holder = {"dataset": None, "field_checkboxes": {}}
@@ -88,11 +83,13 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         if not os.path.exists(path):
             status.object = f"**File not found:** `{path}`"
             return
-        load_btn.disabled = True
-        load_progress.visible = True
         step2.visible = False
+        status.object = ""
+        async with busy.show("Loading file...", path):
+            await _load(path)
+
+    async def _load(path: str):
         try:
-            status.object = "Loading (this can take a while for large files)..."
             adata = await asyncio.to_thread(sc.read_h5ad, path)
             if "spatial" not in adata.obsm:
                 status.object = (
@@ -100,14 +97,14 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                     "spatial data. Pick a different file."
                 )
                 return
-            status.object = "Normalizing..."
+            busy.update("Normalizing expression...", "normalize_total + log1p, if the data is raw counts")
             normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
             remember_folder_of(path)
             holder["dataset"] = ds
 
-            status.object = "Inspecting obs columns..."
+            busy.update("Inspecting obs columns...")
 
             def _classify_all_columns():
                 for c in adata.obs.columns:
@@ -142,9 +139,6 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to load:** {exc}"
-        finally:
-            load_btn.disabled = False
-            load_progress.visible = False
 
     async def on_open(event):
         ds = holder["dataset"]
@@ -154,26 +148,24 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
         if leiden_checkbox.value:
-            open_btn.disabled = True
-            open_progress.visible = True
-            open_status.object = "Running Leiden clustering (this can take a while for large files)..."
+            open_status.object = ""
             largest = ds.largest_sample_size()
+            # Huge samples open hex-binned in the viewer, so cluster those same bins.
+            on_hexbins = largest > hexbin.BINNING_THRESHOLD
+            detail = ("on hexagonal bins of the " if on_hexbins else "on all ") + f"{ds.adata.n_obs:,} cells"
             try:
-                # Huge samples open hex-binned in the viewer, so cluster those same bins.
-                if largest > hexbin.BINNING_THRESHOLD:
-                    col, _ = await asyncio.to_thread(
-                        clustering.run_leiden_on_hexbins, ds, hexbin.default_width_factor(largest),
-                        leiden_resolution.value,
-                    )
-                else:
-                    col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
+                async with busy.show("Running Leiden clustering...", detail):
+                    if on_hexbins:
+                        col, _ = await asyncio.to_thread(
+                            clustering.run_leiden_on_hexbins, ds, hexbin.default_width_factor(largest),
+                            leiden_resolution.value,
+                        )
+                    else:
+                        col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
             except Exception as exc:
                 traceback.print_exc(file=sys.stderr)
                 open_status.object = f"**Leiden clustering failed:** {exc}"
                 return
-            finally:
-                open_btn.disabled = False
-                open_progress.visible = False
             ds.add_field(col)  # always offered for coloring, even if not checked above
             holder["field_checkboxes"].setdefault(col, pn.widgets.Checkbox(name=col, value=True)).value = True
             open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
@@ -186,7 +178,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         state.spatial = ds
         state.pathways_path = pathways_input.value.strip()
         state.pathways = pathways_mod.load_pathways(state.pathways_path)
-        on_ready()
+        async with busy.show("Opening the viewer...", "measuring each sample's cell layout"):
+            on_ready()
 
     load_btn.on_click(on_load)
     open_btn.on_click(on_open)
@@ -198,7 +191,6 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         "use for samples/fields-of-view and coloring after loading.",
         path_picker,
         load_btn,
-        load_progress,
         status,
         step2,
         width=680,

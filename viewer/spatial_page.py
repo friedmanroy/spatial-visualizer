@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import sys
 import traceback
@@ -238,9 +239,6 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         start=0.05, end=10, step=0.1, sizing_mode="stretch_width",
     )
     leiden_btn = pn.widgets.Button(name="Run Leiden", button_type="primary", width=110, margin=(23, 5, 5, 5))
-    leiden_progress = pn.indicators.Progress(
-        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(5, 5),
-    )
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
     # With hex binning on, the bins shown are what gets clustered (each by its cells'
     # mean expression) - far faster than clustering a million+ individual cells.
@@ -258,37 +256,36 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bin_width.param.watch(update_leiden_target, "value")
 
     async def on_run_leiden(event):
-        leiden_btn.disabled = True
-        leiden_progress.visible = True
-        leiden_status.object = "Clustering (this can take a while for large files)..."
+        leiden_status.object = ""
+        detail = (f"on hexagonal bins {bin_width.value:g} cell spacings wide" if bin_toggle.value
+                  else f"on all {dataset.adata.n_obs:,} cells") + f", resolution {leiden_resolution.value:g}"
         try:
-            if bin_toggle.value:
-                col, n_bins = await asyncio.to_thread(
-                    clustering.run_leiden_on_hexbins, dataset, bin_width.value, leiden_resolution.value,
-                )
-                clustered = f"{n_bins:,} hex bins"
-            else:
-                col = await asyncio.to_thread(clustering.run_leiden, dataset.adata, leiden_resolution.value)
-                clustered = f"{dataset.adata.n_obs:,} cells"
+            async with state.busy.show("Running Leiden clustering...", detail):
+                if bin_toggle.value:
+                    col, n_bins = await asyncio.to_thread(
+                        clustering.run_leiden_on_hexbins, dataset, bin_width.value, leiden_resolution.value,
+                    )
+                    clustered = f"{n_bins:,} hex bins"
+                else:
+                    col = await asyncio.to_thread(clustering.run_leiden, dataset.adata, leiden_resolution.value)
+                    clustered = f"{dataset.adata.n_obs:,} cells"
+                dataset.add_field(col)
+                state.busy.update("Coloring by the new clusters...")
+                controls.refresh_field_options(col, select=True)
+                for listener in state.field_listeners:
+                    listener(dataset, col)
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             leiden_status.object = f"**Leiden clustering failed:** {exc}"
             return
-        finally:
-            leiden_btn.disabled = False
-            leiden_progress.visible = False
-        dataset.add_field(col)
         leiden_status.object = (
             f"Added **{col}** ({dataset.adata.obs[col].nunique()} clusters, from {clustered})."
         )
-        controls.refresh_field_options(col, select=True)
-        for listener in state.field_listeners:
-            listener(dataset, col)
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
         leiden_target, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
-        leiden_progress, leiden_status,
+        leiden_status,
         title="Leiden clustering", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
     display_card = pn.Card(
@@ -296,11 +293,20 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
 
-    def on_sample_change(event):
+    def busy_if_slow(sample_id: str, message: str):
+        """The full-page overlay, but only for samples big enough for a redraw to take a
+        noticeable while - on small ones it would just flash on every click."""
+        n = len(dataset.sample_indices(sample_id))
+        if n < _SLOW_REDRAW_CELLS:
+            return contextlib.nullcontext()
+        return state.busy.show(message, f"{n:,} cells")
+
+    async def on_sample_change(event):
         sample_select.name = _sample_label(dataset.sample_ids.index(event.new), n_samples)
-        with pn.io.hold():
-            controls.update_category_counts()
-            redraw_full(event.new)
+        async with busy_if_slow(event.new, f"Drawing {event.new}..."):
+            with pn.io.hold():
+                controls.update_category_counts()
+                redraw_full(event.new)
 
     def on_prev(event):
         i = dataset.sample_ids.index(sample_select.value)
@@ -314,10 +320,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     sample_select.param.watch(on_sample_change, "value")
 
-    def on_binning_change(event):
+    async def on_binning_change(event):
         bin_width.visible = bin_toggle.value
-        with pn.io.hold():
-            redraw_full(sample_select.value)
+        message = "Grouping cells into hexagonal bins..." if bin_toggle.value else "Drawing individual cells..."
+        async with busy_if_slow(sample_select.value, message):
+            with pn.io.hold():
+                redraw_full(sample_select.value)
 
     bin_toggle.param.watch(on_binning_change, "value")
     bin_width.param.watch(on_binning_change, "value")
@@ -336,6 +344,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
+
+
+#: samples with at least this many cells get the "working..." overlay while redrawing
+_SLOW_REDRAW_CELLS = 200_000
 
 
 def _sample_label(i: int, n: int) -> str:

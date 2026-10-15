@@ -16,6 +16,7 @@ browser, so the page appears frozen for good.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -88,10 +89,11 @@ def remember_folder_of(path: str):
 
 
 def build_path_picker(
-    label: str, placeholder: str = "/path/to/data.h5ad", file_pattern: str = "*.h5ad"
+    label: str, placeholder: str = "/path/to/data.h5ad", file_pattern: str = "*.h5ad", busy=None,
 ) -> tuple[pn.widgets.TextInput, pn.widgets.Button, pn.viewable.Viewable]:
     """Returns (text input, browse button, both side by side). Callers short on width
-    can ignore the combined row and lay out the input and button themselves."""
+    can ignore the combined row and lay out the input and button themselves. With a
+    BusyOverlay `busy`, the page is grayed out while the dialog is open."""
     path_input = pn.widgets.TextInput(name=label, placeholder=placeholder)
     # align="end" puts the button at the bottom of the row, level with the text box
     # rather than with the text box's title above it.
@@ -101,7 +103,11 @@ def build_path_picker(
         browse_btn.disabled = True  # avoid stacking several dialogs
         try:
             start_dir = _start_directory(path_input.value.strip())
-            path = await asyncio.to_thread(_pick_file_blocking, file_pattern, start_dir)
+            async with (busy.show(
+                "Waiting for you to choose a file...",
+                "The file dialog is a separate window - if you don't see it, it may be behind the browser.",
+            ) if busy is not None else contextlib.nullcontext()):
+                path = await asyncio.to_thread(_pick_file_blocking, file_pattern, start_dir)
         except Exception:
             traceback.print_exc(file=sys.stderr)
             return

@@ -48,11 +48,9 @@ def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int):
 
 
 def build_embedding_page(state) -> pn.viewable.Viewable:
-    path_input, browse_btn, _ = build_path_picker("scRNA / snRNA .h5ad path")
+    busy = state.busy
+    path_input, browse_btn, _ = build_path_picker("scRNA / snRNA .h5ad path", busy=busy)
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
-    load_progress = pn.indicators.Progress(
-        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
-    )
 
     n_pcs_input = pn.widgets.IntInput(name="Number of PCs", value=DEFAULT_N_PCS, start=2, end=50, width=140)
     n_neighbors_input = pn.widgets.IntInput(
@@ -63,9 +61,6 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     )
     recompute_btn = pn.widgets.Button(
         name="Recompute with these settings", button_type="default", visible=False
-    )
-    compute_progress = pn.indicators.Progress(
-        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
     )
     status = pn.pane.Markdown("_No embedding loaded yet._")
 
@@ -173,6 +168,10 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
 
     state.field_listeners.append(on_field_added)
 
+    def _embedding_detail(n_cells: int) -> str:
+        return (f"{n_pcs_input.value} PCs, {n_neighbors_input.value} neighbors, {n_cells:,} cells - "
+                "this can take several minutes for large datasets")
+
     def activate_dataset(ds: Dataset, label: str):
         state.embedding = ds
         with pn.io.hold():
@@ -193,74 +192,50 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         if not os.path.exists(path):
             status.object = f"**File not found:** `{path}`"
             return
-        load_btn.disabled = True
-        load_progress.visible = True
         try:
-            status.object = "Loading..."
-            adata = await asyncio.to_thread(sc.read_h5ad, path)
-            if "spatial" not in adata.obsm:
-                status.object = "Normalizing..."
-                await asyncio.to_thread(clustering.normalize_if_raw, adata)
-            ds = Dataset(adata, name=os.path.basename(path))
-            remember_folder_of(path)
-            if not _has_embedding(adata):
-                status.object = (
-                    f"Computing PCA ({n_pcs_input.value} PCs) and UMAP "
-                    f"({n_neighbors_input.value} neighbors)..."
-                )
-                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
-            activate_dataset(ds, os.path.basename(path))
+            async with busy.show("Loading file...", path):
+                adata = await asyncio.to_thread(sc.read_h5ad, path)
+                if "spatial" not in adata.obsm:
+                    busy.update("Normalizing expression...", "normalize_total + log1p, if the data is raw counts")
+                    await asyncio.to_thread(clustering.normalize_if_raw, adata)
+                ds = Dataset(adata, name=os.path.basename(path))
+                remember_folder_of(path)
+                if not _has_embedding(adata):
+                    busy.update("Computing PCA and UMAP...", _embedding_detail(adata.n_obs))
+                    await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                activate_dataset(ds, os.path.basename(path))
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to load:** {exc}"
-        finally:
-            load_btn.disabled = False
-            load_progress.visible = False
 
     async def on_compute_from_spatial(event):
         if state.spatial is None:
             status.object = "No spatial dataset loaded."
             return
-        compute_btn.disabled = True
-        compute_progress.visible = True
+        ds = state.spatial
         try:
-            ds = state.spatial
-            status.object = (
-                f"Computing PCA ({n_pcs_input.value} PCs) and UMAP "
-                f"({n_neighbors_input.value} neighbors) from {ds.adata.n_obs:,} spatial "
-                f"cells - this can take several minutes for large datasets."
-            )
-            await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
-            activate_dataset(ds, f"{ds.name} (computed from spatial data)")
+            async with busy.show("Computing PCA and UMAP from the spatial data...",
+                                 _embedding_detail(ds.adata.n_obs)):
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                activate_dataset(ds, f"{ds.name} (computed from spatial data)")
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to compute embedding:** {exc}"
-        finally:
-            compute_btn.disabled = False
-            compute_progress.visible = False
 
     async def on_recompute(event):
         ds = state.embedding
         if ds is None:
             return
-        recompute_btn.disabled = True
-        compute_progress.visible = True
         try:
-            status.object = (
-                f"Recomputing PCA ({n_pcs_input.value} PCs) and UMAP "
-                f"({n_neighbors_input.value} neighbors) on {ds.adata.n_obs:,} cells..."
-            )
-            await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
-            with pn.io.hold():
-                refresh_axis_options()
-                redraw_full()
+            async with busy.show("Recomputing PCA and UMAP...", _embedding_detail(ds.adata.n_obs)):
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value)
+                with pn.io.hold():
+                    refresh_axis_options()
+                    redraw_full()
             status.object = f"**Active embedding source:** {ds.name} ({ds.adata.n_obs:,} cells)"
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to recompute embedding:** {exc}"
-        finally:
-            recompute_btn.disabled = False
-            compute_progress.visible = False
 
     load_btn.on_click(on_load)
     compute_btn.on_click(on_compute_from_spatial)
@@ -284,8 +259,6 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     controls.layout.visible = False  # nothing to color until an embedding is active
     sidebar = pn.Column(
         status,
-        load_progress,
-        compute_progress,
         source_card,
         view_controls,
         controls.layout,

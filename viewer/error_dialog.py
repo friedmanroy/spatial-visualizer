@@ -11,7 +11,7 @@ import traceback
 
 import panel as pn
 
-_OVERLAY_STYLES_BASE = {
+OVERLAY_STYLES_BASE = {
     "position": "fixed", "top": "0px", "left": "0px", "right": "0px", "bottom": "0px",
     "width": "100%", "height": "100%", "background": "rgba(0,0,0,0.55)",
     "z-index": "99999", "align-items": "center", "justify-content": "center",
@@ -39,17 +39,18 @@ def build_error_dialog() -> tuple[pn.viewable.Viewable, callable]:
         message_pane,
         close_btn,
         styles=_BOX_STYLES,
+        align="center",  # horizontally centered in the overlay (vertical: justify-content)
     )
     # Controlling visibility through the `display` style (rather than Panel's own
     # `.visible` flag) avoids the two fighting over the element's display property,
     # since this overlay already sets `display` itself for the centering flexbox.
-    overlay = pn.Column(dialog_box, styles={**_OVERLAY_STYLES_BASE, "display": "none"})
+    overlay = pn.Column(dialog_box, styles={**OVERLAY_STYLES_BASE, "display": "none"})
 
     def show_error(exc: BaseException):
         traceback.print_exc(file=sys.stderr)
         text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         message_pane.object = f"<pre>{html.escape(text)}</pre>"
-        overlay.styles = {**_OVERLAY_STYLES_BASE, "display": "flex"}
+        overlay.styles = {**OVERLAY_STYLES_BASE, "display": "flex"}
 
     def on_close(event):
         os._exit(1)

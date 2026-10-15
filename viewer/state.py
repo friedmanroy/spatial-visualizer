@@ -154,3 +154,5 @@ class AppState:
         # Called with (dataset, field name) whenever an obs column is added to a
         # dataset from inside the viewer (e.g. re-running Leiden clustering).
         self.field_listeners: list = []
+        # Full-page "working..." overlay for long steps (viewer.busy_overlay.BusyOverlay).
+        self.busy = None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import panel as pn
 
 from .embedding_page import build_embedding_page
+from .busy_overlay import BusyOverlay
 from .error_dialog import build_error_dialog
 from .landing import build_landing
 from .pathways_page import build_pathways_page
@@ -15,6 +16,7 @@ from .state import AppState
 def build() -> pn.viewable.Viewable:
     pn.extension()
     state = AppState()
+    state.busy = BusyOverlay()
     root = pn.Column(sizing_mode="stretch_both")
 
     def show_viewer():
@@ -38,4 +40,4 @@ def build() -> pn.viewable.Viewable:
     error_overlay, show_error = build_error_dialog()
     pn.config.exception_handler = show_error
 
-    return pn.Column(root, error_overlay, sizing_mode="stretch_both")
+    return pn.Column(root, state.busy.layout, error_overlay, sizing_mode="stretch_both")
