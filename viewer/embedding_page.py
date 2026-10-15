@@ -18,14 +18,14 @@ import scanpy as sc
 from bokeh.models import ColumnDataSource
 from bokeh.plotting import figure
 
-from . import spatial_plot
+from . import clustering, spatial_plot
 from .color_controls import ColorControls
 from .colors import GRAY
 from .file_picker import build_path_picker
 from .state import Dataset
 
-DEFAULT_N_PCS = 10
-DEFAULT_N_NEIGHBORS = 15
+DEFAULT_N_PCS = clustering.DEFAULT_N_PCS
+DEFAULT_N_NEIGHBORS = clustering.DEFAULT_N_NEIGHBORS
 
 
 def _has_embedding(adata) -> bool:
@@ -35,27 +35,11 @@ def _has_embedding(adata) -> bool:
 
 
 def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int):
-    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy, using a highly-variable-gene
-    subset *copy* so the dataset's own .X (used elsewhere for gene-expression
-    coloring) is never mutated by scaling. Always overwrites any existing embedding,
-    since this is called specifically when the user (re)requests a computation."""
+    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy. Always overwrites any existing
+    embedding, since this is called specifically when the user (re)requests a computation."""
     adata = dataset.adata
-    if "highly_variable" not in adata.var.columns:
-        n_top = min(2000, adata.n_vars)
-        sc.pp.highly_variable_genes(adata, n_top_genes=n_top, flavor="seurat")
-    hvg_mask = adata.var["highly_variable"].to_numpy()
-    if hvg_mask.sum() < 2:
-        hvg_mask = np.ones(adata.n_vars, dtype=bool)
-
-    tmp = adata[:, hvg_mask].copy()
-    sc.pp.scale(tmp, max_value=10)
-    n_comps = max(2, min(n_pcs, tmp.n_vars - 1, tmp.n_obs - 1))
-    sc.pp.pca(tmp, n_comps=n_comps, svd_solver="arpack")
-    adata.obsm["X_pca"] = tmp.obsm["X_pca"]
-
-    n_neigh = max(2, min(n_neighbors, tmp.n_obs - 1))
-    sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps)
-    sc.tl.umap(tmp, n_components=n_comps)
+    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors)
+    sc.tl.umap(tmp, n_components=tmp.obsm["X_pca"].shape[1])
     adata.obsm["X_umap"] = tmp.obsm["X_umap"]
 
 
@@ -167,6 +151,13 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     controls = ColorControls(get_dataset, get_pathways, on_change=recolor_only)
     state.pathway_listeners.append(controls.refresh_pathway_options)
 
+    def on_field_added(ds: Dataset, field: str):
+        # Only relevant when this tab is showing the spatial data's own embedding.
+        if ds is state.embedding:
+            controls.refresh_field_options(field)
+
+    state.field_listeners.append(on_field_added)
+
     def activate_dataset(ds: Dataset, label: str):
         state.embedding = ds
         with pn.io.hold():
@@ -194,12 +185,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             adata = await asyncio.to_thread(sc.read_h5ad, path)
             if "spatial" not in adata.obsm:
                 status.object = "Normalizing..."
-
-                def _normalize():
-                    sc.pp.normalize_total(adata)
-                    sc.pp.log1p(adata)
-
-                await asyncio.to_thread(_normalize)
+                await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             if not _has_embedding(adata):
                 status.object = (

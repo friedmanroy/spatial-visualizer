@@ -20,6 +20,9 @@ GRAY = colors_mod.GRAY
 _CHANNEL_LABEL_COLOR = {"R": "#ff4444", "G": "#44cc44", "B": "#4488ff"}
 _CHANNEL_NAME = {"R": "Red", "G": "Green", "B": "Blue"}
 _WIDGET_WIDTH = 300
+#: how many of the most highly variable genes the gene dropdown offers
+_N_DROPDOWN_GENES = 200
+_DROPDOWN_PROMPT = f"or pick a top-{_N_DROPDOWN_GENES} variable gene"
 #: left inset shared by every top-level row in the sidebar, so fields/buttons/
 #: checkboxes all start flush against the same edge instead of drifting per widget.
 _INSET = 1
@@ -85,11 +88,16 @@ class ColorControls:
             pathway_select = pn.widgets.Select(
                 name=f"{label} pathway", options=[""], value="", visible=False, width=_WIDGET_WIDTH - 60
             )
+            # Browsable alternative to searching: the most highly variable genes, most variable first.
+            gene_dropdown = pn.widgets.Select(
+                name="", options={_DROPDOWN_PROMPT: ""}, value="",
+                width=_WIDGET_WIDTH - 60, margin=(0, 10, 5, 10),
+            )
             clear_btn = pn.widgets.Button(name="Clear", width=60, margin=(18, 0, 0, 5))
             info_pane = pn.pane.HTML("", visible=False, width=_WIDGET_WIDTH, margin=(0, 0, 0, _INSET))
             hist_pane = pn.pane.HTML("", visible=False, width=_WIDGET_WIDTH, margin=(0, 0, 0, _INSET))
             self.channel_widgets[label] = dict(
-                gene=gene_input, pathway=pathway_select, info=info_pane, hist=hist_pane,
+                gene=gene_input, gene_dropdown=gene_dropdown, pathway=pathway_select, info=info_pane, hist=hist_pane,
             )
             color = _CHANNEL_LABEL_COLOR[label]
             channel_blocks.append(
@@ -100,6 +108,7 @@ class ColorControls:
                         margin=(0, 0, 0, _INSET),
                     ),
                     pn.Row(gene_input, pathway_select, clear_btn, margin=(0, 0, 0, _INSET)),
+                    pn.Row(gene_dropdown, margin=(0, 0, 0, _INSET)),
                     hist_pane,
                     info_pane,
                     margin=0,
@@ -115,6 +124,8 @@ class ColorControls:
         self.deselect_all_btn.on_click(lambda e: self._set_all(False))
         for w in self.channel_widgets.values():
             w["gene"].param.watch(self._fire, "value")
+            w["gene"].param.watch(lambda e, w=w: self._sync_dropdown(w), "value")
+            w["gene_dropdown"].param.watch(lambda e, w=w: self._on_dropdown_pick(w, e.new), "value")
             w["pathway"].param.watch(self._fire, "value")
 
         self.layout = pn.Column(
@@ -146,9 +157,30 @@ class ColorControls:
                 self._rebuild_value_picker()
             pathway_names = sorted(self.get_pathways().keys())
             gene_names = list(dataset.adata.var_names)
+            dropdown_options = {_DROPDOWN_PROMPT: ""}
+            dropdown_options.update({g: g for g in dataset.top_variable_genes(_N_DROPDOWN_GENES)})
             for w in self.channel_widgets.values():
                 w["pathway"].options = [""] + pathway_names
                 w["gene"].options = gene_names
+                w["gene_dropdown"].options = dropdown_options
+                self._sync_dropdown(w)
+
+    def refresh_field_options(self, changed_field: str, select: bool = False):
+        """Re-reads the field list after an obs column was added/recomputed (e.g. Leiden),
+        optionally switching to Field mode and coloring by that column."""
+        dataset = self.get_dataset()
+        if dataset is None:
+            return
+        with pn.io.hold():
+            self._value_picker_cache.pop(changed_field, None)  # its categories may have changed
+            self.field_select.options = dataset.field_options()
+            if select:
+                self.mode.value = "Field"
+            if select and self.field_select.value != changed_field:
+                self.field_select.value = changed_field  # its watcher rebuilds + recolors
+            elif self.field_select.value == changed_field:
+                self._rebuild_value_picker()
+                self._fire()
 
     def refresh_pathway_options(self, changed_name: str | None = None):
         """Re-reads the pathway list after the Pathways tab added/changed/removed one,
@@ -182,8 +214,22 @@ class ColorControls:
             is_gene = event.new == "Gene"
             for w in self.channel_widgets.values():
                 w["gene"].visible = is_gene
+                w["gene_dropdown"].visible = is_gene
                 w["pathway"].visible = not is_gene
             self._fire()
+
+    def _on_dropdown_pick(self, w: dict, gene: str):
+        # Only push a real pick into the search box; the gene box's own watcher
+        # does the recoloring, so the dropdown never fires on its own.
+        if gene and w["gene"].value != gene:
+            w["gene"].value = gene
+
+    def _sync_dropdown(self, w: dict):
+        """Mirrors the searched gene in the dropdown (or resets it to the prompt)."""
+        dataset = self.get_dataset()
+        gene = w["gene"].value.strip()
+        matched = dataset.match_gene(gene) if dataset is not None and gene else None
+        w["gene_dropdown"].value = matched if matched in w["gene_dropdown"].values else ""
 
     def _clear_channel(self, label: str):
         with pn.io.hold():

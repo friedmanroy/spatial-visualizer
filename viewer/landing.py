@@ -11,6 +11,7 @@ import traceback
 import panel as pn
 import scanpy as sc
 
+from . import clustering
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .file_picker import build_path_picker
@@ -46,9 +47,24 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         field_checkbox_box,
     )
 
+    leiden_checkbox = pn.widgets.Checkbox(
+        name="Run Leiden clustering before opening (adds a coloring field)", value=False,
+    )
+    leiden_resolution = pn.widgets.FloatInput(
+        name="Leiden resolution (higher = more clusters)",
+        value=clustering.DEFAULT_LEIDEN_RESOLUTION, start=0.05, end=10, step=0.1,
+        width=260, visible=False,
+    )
+    leiden_checkbox.param.watch(lambda e: setattr(leiden_resolution, "visible", e.new), "value")
+
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
+    open_progress = pn.indicators.Progress(
+        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(10, 0),
+    )
+    open_status = pn.pane.Markdown("")
     step2 = pn.Column(
-        sample_col_select, pathways_input, field_picker, open_btn, visible=False
+        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_resolution,
+        open_btn, open_progress, open_status, visible=False,
     )
 
     holder = {"dataset": None, "field_checkboxes": {}}
@@ -85,12 +101,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 )
                 return
             status.object = "Normalizing..."
-
-            def _normalize():
-                sc.pp.normalize_total(adata)
-                sc.pp.log1p(adata)
-
-            await asyncio.to_thread(_normalize)
+            normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
             holder["dataset"] = ds
@@ -120,7 +131,12 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
 
             pathways_input.value = DEFAULT_PATHWAYS_PATH if os.path.exists(DEFAULT_PATHWAYS_PATH) else ""
 
-            status.object = f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`."
+            status.object = (
+                f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`. "
+                + ("Normalized (`normalize_total` + `log1p`)." if normalized else
+                   "`.X` doesn't look like raw counts (it has fractional or negative values), "
+                   "so it was used as-is, assuming it's already normalized.")
+            )
             step2.visible = True
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
@@ -129,10 +145,26 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             load_btn.disabled = False
             load_progress.visible = False
 
-    def on_open(event):
+    async def on_open(event):
         ds = holder["dataset"]
         if ds is None:
             return
+        if leiden_checkbox.value:
+            open_btn.disabled = True
+            open_progress.visible = True
+            open_status.object = "Running Leiden clustering (this can take a while for large files)..."
+            try:
+                col = await asyncio.to_thread(clustering.run_leiden, ds.adata, leiden_resolution.value)
+            except Exception as exc:
+                traceback.print_exc(file=sys.stderr)
+                open_status.object = f"**Leiden clustering failed:** {exc}"
+                return
+            finally:
+                open_btn.disabled = False
+                open_progress.visible = False
+            ds.add_field(col)  # always offered for coloring, even if not checked above
+            holder["field_checkboxes"].setdefault(col, pn.widgets.Checkbox(name=col, value=True)).value = True
+            open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
         sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
         field_checkboxes = holder["field_checkboxes"]

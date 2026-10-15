@@ -6,6 +6,7 @@ no column name is ever assumed to exist - everything is looked up through `field
 from __future__ import annotations
 
 import numpy as np
+import scanpy as sc
 import scipy.sparse as sp
 
 from . import fields as fields_mod
@@ -27,6 +28,7 @@ class Dataset:
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
         self._var_upper_lookup: dict[str, str] | None = None
+        self._top_variable_genes: dict[int, list[str]] = {}
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
         # None means "no restriction, offer every eligible field"; otherwise only
         # these column names are offered as "color by" options (set on the landing
@@ -44,6 +46,14 @@ class Dataset:
                 spec.colors.update(self.color_cache.get_field_colors(colname))
             self._field_cache[colname] = spec
         return self._field_cache[colname]
+
+    def add_field(self, colname: str):
+        """Registers an obs column computed after loading (e.g. Leiden clusters):
+        drops any stale classification of it and makes sure it's offered for coloring."""
+        self._field_cache.pop(colname, None)
+        self.classify(colname)
+        if self.allowed_fields is not None:
+            self.allowed_fields.add(colname)
 
     def field_options(self, exclude: tuple[str, ...] = ()) -> list[str]:
         options = fields_mod.list_field_options(self.adata, exclude=exclude)
@@ -81,6 +91,16 @@ class Dataset:
             self._var_upper_lookup = {v.upper(): v for v in self.adata.var_names}
         return self._var_upper_lookup.get(gene.upper())
 
+    def top_variable_genes(self, n: int) -> list[str]:
+        """The `n` most highly variable genes, most variable (normalized dispersion) first.
+        Computed with inplace=False so it never touches var['highly_variable'], which
+        PCA/clustering use with their own (larger) gene count."""
+        if n not in self._top_variable_genes:
+            hvg = sc.pp.highly_variable_genes(self.adata, flavor="seurat", inplace=False)
+            hvg.index = self.adata.var_names
+            ranked = hvg["dispersions_norm"].dropna().sort_values(ascending=False, kind="stable")
+            self._top_variable_genes[n] = [str(g) for g in ranked.index[:n]]
+        return self._top_variable_genes[n]
 
     def gene_values(self, gene: str) -> np.ndarray | None:
         # Index the raw matrix directly (bypassing AnnData's __getitem__, which
@@ -105,3 +125,6 @@ class AppState:
         self.pathways_path: str = ""
         # Called with a pathway name whenever the Pathways tab adds/changes/removes one.
         self.pathway_listeners: list = []
+        # Called with (dataset, field name) whenever an obs column is added to a
+        # dataset from inside the viewer (e.g. re-running Leiden clustering).
+        self.field_listeners: list = []

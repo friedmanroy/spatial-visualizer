@@ -22,6 +22,7 @@ dependencies = [
     "scikit-learn==1.9.1",
     "h5py==3.16.0",
     "umap-learn==0.5.12",
+    "igraph==1.0.0",  # for Leiden clustering
 ]
 
 [project.scripts]

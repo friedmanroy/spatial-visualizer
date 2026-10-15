@@ -1,11 +1,15 @@
 """The 'Spatial' tab: per-sample hexagon/square/circle rendering + Field / Gene & Pathway coloring."""
 from __future__ import annotations
 
+import asyncio
+import sys
+import traceback
+
 import numpy as np
 import panel as pn
 from bokeh.models import ColumnDataSource
 
-from . import spatial_plot
+from . import clustering, spatial_plot
 from .color_controls import ColorControls
 from .colors import GRAY
 
@@ -152,6 +156,43 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     state.pathway_listeners.append(controls.refresh_pathway_options)
     recolor_only()
 
+    # Re-run Leiden at another resolution without going back to the landing page; each
+    # resolution gets its own obs column, so earlier clusterings stay available.
+    leiden_resolution = pn.widgets.FloatInput(
+        name="Resolution (higher = more clusters)", value=clustering.DEFAULT_LEIDEN_RESOLUTION,
+        start=0.05, end=10, step=0.1, width=200,
+    )
+    leiden_btn = pn.widgets.Button(name="Run Leiden", button_type="primary", width=110, margin=(23, 5, 5, 5))
+    leiden_progress = pn.indicators.Progress(
+        active=True, value=None, visible=False, sizing_mode="stretch_width", height=10, margin=(5, 5),
+    )
+    leiden_status = pn.pane.Markdown("", margin=(0, 5))
+
+    async def on_run_leiden(event):
+        leiden_btn.disabled = True
+        leiden_progress.visible = True
+        leiden_status.object = "Clustering (this can take a while for large files)..."
+        try:
+            col = await asyncio.to_thread(clustering.run_leiden, dataset.adata, leiden_resolution.value)
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            leiden_status.object = f"**Leiden clustering failed:** {exc}"
+            return
+        finally:
+            leiden_btn.disabled = False
+            leiden_progress.visible = False
+        dataset.add_field(col)
+        leiden_status.object = f"Added **{col}** ({dataset.adata.obs[col].nunique()} clusters)."
+        controls.refresh_field_options(col, select=True)
+        for listener in state.field_listeners:
+            listener(dataset, col)
+
+    leiden_btn.on_click(on_run_leiden)
+    leiden_card = pn.Card(
+        pn.Row(leiden_resolution, leiden_btn), leiden_progress, leiden_status,
+        title="Leiden clustering", collapsed=True, sizing_mode="stretch_width",
+    )
+
     def on_sample_change(event):
         redraw_full(event.new)
 
@@ -178,6 +219,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         bg_select,
         bg_orientation,
         cell_opacity,
+        leiden_card,
         pn.layout.Divider(),
         controls.layout,
         width=380,
