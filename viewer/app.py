@@ -6,6 +6,7 @@ import panel as pn
 
 from .embedding_page import build_embedding_page
 from .busy_overlay import BusyOverlay
+from .celltype_controls import CellTypingControls
 from .error_dialog import build_error_dialog
 from .landing import build_landing
 from .pathways_page import build_pathways_page
@@ -17,6 +18,7 @@ def build() -> pn.viewable.Viewable:
     pn.extension()
     state = AppState()
     state.busy = BusyOverlay()
+    state.celltyping = CellTypingControls(state.busy)
     root = pn.Column(sizing_mode="stretch_both")
 
     def show_viewer():

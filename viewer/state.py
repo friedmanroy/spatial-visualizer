@@ -34,6 +34,8 @@ class Dataset:
         self._var_upper_lookup: dict[str, str] | None = None
         self._top_variable_genes: dict[int, list[str]] = {}
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
+        # obs column -> celltyping.CellTypingResult, for showing per-cluster suggestions.
+        self.celltype_results: dict = {}
         # None means "no restriction, offer every eligible field"; otherwise only
         # these column names are offered as "color by" options (set on the landing
         # page so irrelevant obs columns don't clutter the field picker).
@@ -156,3 +158,6 @@ class AppState:
         self.field_listeners: list = []
         # Full-page "working..." overlay for long steps (viewer.busy_overlay.BusyOverlay).
         self.busy = None
+        # Cell-typing settings (celltype_controls.CellTypingControls), shared by the
+        # landing page and the Spatial tab so choices carry over.
+        self.celltyping = None

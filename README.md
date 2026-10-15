@@ -18,6 +18,18 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   tissue, and a slider makes them smaller or bigger.
 - **Fields-of-view / samples** - pick which obs column splits the data into samples, then
   browse between them with a dropdown or Prev/Next.
+- **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
+  (about 25,000 per sample by default, adjustable under **Display settings**): each bin shows
+  its cells' mean expression, or their most common selected category.
+- **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
+  using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). With hex binning on,
+  the bins are clustered (much faster), and every cell gets its bin's cluster.
+- **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
+  PanglaoDB marker genes, scored with [decoupler](https://decoupler.readthedocs.io) (ULM on
+  the clusters' standardised mean expression). Pick the species (guessed from the gene names)
+  and tissue to keep off-tissue types out; a table shows each cluster's suggestion, score and
+  runners-up. A rough first guess to check against known markers - not a validated
+  annotation. PanglaoDB is downloaded once (needs internet) and then kept in `cache/`.
 - **Gene & Pathway view** - RGB-channel overlay of up to three genes or gene-set (pathway)
   scores at once, with autocomplete gene search, a description + gene list for each pathway,
   and a small histogram of the score distribution under each channel.
@@ -32,6 +44,8 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   sample/FOV column are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
+- **Loading overlay** - long steps (loading, clustering, PCA/UMAP...) gray out the page with a
+  spinner and a line saying what's running.
 - **Error dialog** - any unexpected error shows a popup with the traceback instead of silently
   freezing the page.
 
@@ -158,6 +172,11 @@ viewer/
   colors.py                 palette assignment, RGB blending
   histogram.py               gene/pathway score distribution histograms
   pathways.py                pathways.json + custom pathway loading, score_genes scoring
+  clustering.py              normalization check, PCA/neighbors, Leiden (per cell or per hex bin)
+  hexbin.py                  hexagonal binning of very large samples
+  celltyping.py              PanglaoDB + decoupler cell-type suggestions for clusters
+  celltype_controls.py       species / tissue widgets and the suggestions table
+  busy_overlay.py            full-page "working..." overlay
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
   cache.py                   persists per-dataset color/field choices to cache/

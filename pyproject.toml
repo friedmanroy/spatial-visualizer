@@ -23,6 +23,7 @@ dependencies = [
     "h5py==3.16.0",
     "umap-learn==0.5.12",
     "igraph==1.0.0",  # for Leiden clustering
+    "decoupler==2.2.0",  # for marker-based cell typing of Leiden clusters
 ]
 
 [project.scripts]

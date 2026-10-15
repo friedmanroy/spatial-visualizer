@@ -13,6 +13,7 @@ from bokeh.models import ColumnDataSource
 
 from . import clustering, hexbin, spatial_plot
 from .color_controls import ColorControls
+from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY
 
@@ -269,11 +270,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 else:
                     col = await asyncio.to_thread(clustering.run_leiden, dataset.adata, leiden_resolution.value)
                     clustered = f"{dataset.adata.n_obs:,} cells"
-                dataset.add_field(col)
-                state.busy.update("Coloring by the new clusters...")
-                controls.refresh_field_options(col, select=True)
-                for listener in state.field_listeners:
-                    listener(dataset, col)
+                add_and_announce_field(col, select=True)
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             leiden_status.object = f"**Leiden clustering failed:** {exc}"
@@ -281,13 +278,50 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_status.object = (
             f"Added **{col}** ({dataset.adata.obs[col].nunique()} clusters, from {clustered})."
         )
+        if typing.enabled.value:
+            await run_cell_typing(col)
+
+    def add_and_announce_field(col: str, select: bool):
+        dataset.add_field(col)
+        controls.refresh_field_options(col, select=select)
+        for listener in state.field_listeners:
+            listener(dataset, col)
+
+    async def run_cell_typing(cluster_col: str):
+        try:
+            result = await typing.annotate(dataset, cluster_col)
+            async with state.busy.show("Coloring by the suggested cell types..."):
+                add_and_announce_field(result.column, select=True)
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            typing_results.object = f"<b>Cell typing failed:</b> {html.escape(str(exc))}"
+            return
+        typing_results.object = results_html(result)
+
+    # Settings are shared with the landing page; download PanglaoDB (first time only)
+    # as soon as the panel is opened, so the tissue list is filled in.
+    typing = state.celltyping
+    typing_results = pn.pane.HTML("", sizing_mode="stretch_width", margin=(4, 5))
+    if dataset.celltype_results:  # e.g. from the landing page's Leiden run: show and color by it
+        latest = list(dataset.celltype_results.values())[-1]
+        typing_results.object = results_html(latest)
+        controls.refresh_field_options(latest.column, select=True)
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
-        leiden_target, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
-        leiden_status,
-        title="Leiden clustering", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
+        leiden_target, typing.layout, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
+        leiden_status, typing_results,
+        title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
+
+    async def on_leiden_card_toggle(event):
+        if not event.new and typing.enabled.value:  # just expanded
+            try:
+                await typing.ensure_markers()
+            except Exception as exc:
+                typing_results.object = f"<b>Cell typing unavailable:</b> {html.escape(str(exc))}"
+
+    leiden_card.param.watch(on_leiden_card_toggle, "collapsed")
     display_card = pn.Card(
         bin_toggle, bin_hint, bin_width, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation,
         title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),

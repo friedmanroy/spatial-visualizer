@@ -53,12 +53,23 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         value=clustering.DEFAULT_LEIDEN_RESOLUTION, start=0.05, end=10, step=0.1,
         width=260, visible=False,
     )
-    leiden_checkbox.param.watch(lambda e: setattr(leiden_resolution, "visible", e.new), "value")
+    typing = state.celltyping
+    typing_box = pn.Column(typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
+
+    async def on_leiden_toggle(event):
+        leiden_resolution.visible = typing_box.visible = event.new
+        if event.new and typing.enabled.value:
+            try:  # fetch PanglaoDB now (first time only) so the tissue list is filled in
+                await typing.ensure_markers()
+            except Exception as exc:
+                open_status.object = f"**Cell typing unavailable:** {exc}"
+
+    leiden_checkbox.param.watch(on_leiden_toggle, "value")
 
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
     open_status = pn.pane.Markdown("")
     step2 = pn.Column(
-        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_resolution,
+        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_resolution, typing_box,
         open_btn, open_status, visible=False,
     )
 
@@ -101,6 +112,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
+            typing.guess_species(adata.var_names)
             remember_folder_of(path)
             holder["dataset"] = ds
 
@@ -166,9 +178,17 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 traceback.print_exc(file=sys.stderr)
                 open_status.object = f"**Leiden clustering failed:** {exc}"
                 return
-            ds.add_field(col)  # always offered for coloring, even if not checked above
-            holder["field_checkboxes"].setdefault(col, pn.widgets.Checkbox(name=col, value=True)).value = True
+            new_fields = [col]
             open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
+            if typing.enabled.value:
+                try:
+                    new_fields.append((await typing.annotate(ds, col)).column)
+                except Exception as exc:  # the clustering itself still worked - carry on
+                    traceback.print_exc(file=sys.stderr)
+                    open_status.object += f" **Cell typing failed:** {exc}"
+            for f in new_fields:  # always offered for coloring, even if not checked above
+                ds.add_field(f)
+                holder["field_checkboxes"].setdefault(f, pn.widgets.Checkbox(name=f, value=True)).value = True
         field_checkboxes = holder["field_checkboxes"]
         enabled = {f for f, cb in field_checkboxes.items() if cb.value}
         ds.allowed_fields = enabled if enabled != set(field_checkboxes) else None
