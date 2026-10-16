@@ -26,7 +26,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   the bins are clustered (much faster), and every cell gets its bin's cluster.
 - **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
   PanglaoDB marker genes, scored with [decoupler](https://decoupler.readthedocs.io) (ULM on
-  the clusters' standardised mean expression). The species (human or mouse) is detected from the gene names; pick the
+  the clusters' standardised mean expression). The species (human or mouse) is preset from the gene names (and can be changed); pick the
   tissue to keep off-tissue types out; a table shows each cluster's suggestion, score and
   runners-up. A rough first guess to check against known markers - not a validated
   annotation. PanglaoDB is downloaded once (needs internet) and then kept in `cache/`.

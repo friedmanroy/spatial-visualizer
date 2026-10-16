@@ -1,5 +1,5 @@
-"""Widgets for the optional cell typing that follows Leiden clustering (tissue, on/off;
-the species is detected from the gene names), shared by the landing page and the Spatial tab's Leiden panel, plus the HTML
+"""Widgets for the optional cell typing that follows Leiden clustering (species - preset
+from the gene names, but changeable - tissue, on/off), shared by the landing page and the Spatial tab's Leiden panel, plus the HTML
 table that shows each cluster's suggested type and runners-up."""
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import panel as pn
 
 from . import celltyping
 from .color_controls import HINT_STYLE
+
+_SPECIES = {"Human": "human", "Mouse": "mouse"}
 
 
 
@@ -25,8 +27,15 @@ class CellTypingControls:
             "best match, or <i>Unknown</i>. A rough first guess - check it against known markers.",
             styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 2, 25),
         )
-        # Detected, not chosen: from the gene names' capitalisation (COL1A1 / Col1a1).
+        # Preset from the gene names' capitalisation when a file loads (COL1A1 = human,
+        # Col1a1 = mouse); the dropdown can still override a wrong guess.
+        self.species = pn.widgets.Select(
+            name="Species", options=_SPECIES, value="human", sizing_mode="stretch_width",
+            description="Set automatically from how the gene names are capitalised; change it if the guess is wrong.",
+        )
         self.species_info = pn.pane.HTML("", styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5))
+        self._detected: str | None = None
+        self.species.param.watch(lambda e: self._update_species_info(), "value")
         self.tissue = pn.widgets.Select(
             name="Tissue", options=[celltyping.ALL_TISSUES], value=celltyping.ALL_TISSUES,
             sizing_mode="stretch_width",
@@ -41,7 +50,8 @@ class CellTypingControls:
             lambda e: setattr(self.include_common, "visible", e.new != celltyping.ALL_TISSUES), "value",
         )
         self._options = pn.Column(
-            self.species_info, self.tissue, self.include_common, sizing_mode="stretch_width", margin=(0, 0, 0, 20),
+            pn.Row(self.species, self.tissue, sizing_mode="stretch_width", margin=0),
+            self.species_info, self.include_common, sizing_mode="stretch_width", margin=(0, 0, 0, 20),
         )
         self.enabled.param.watch(lambda e: setattr(self._options, "visible", e.new), "value")
         self.layout = pn.Column(self.enabled, self.hint, self._options, sizing_mode="stretch_width", margin=0)
@@ -53,11 +63,22 @@ class CellTypingControls:
         self.tissue.options = celltyping.tissue_options(markers)
 
     def guess_species(self, var_names) -> str:
-        """Detects human vs. mouse from the gene names and says so in the panel."""
-        species = celltyping.guess_species(var_names)
-        example = "COL1A1-style, all capitals" if species == "human" else "Col1a1-style, first letter capital"
-        self.species_info.object = f"Species: <b>{species}</b> (detected from the gene names - {example})"
-        return species
+        """Detects human vs. mouse from the gene names (called when a file loads) and
+        presets the species dropdown to it."""
+        self._detected = celltyping.guess_species(var_names)
+        self.species.value = self._detected
+        self._update_species_info()
+        return self._detected
+
+    def _update_species_info(self):
+        if self._detected is None:
+            self.species_info.object = ""
+            return
+        example = "COL1A1-style, all capitals" if self._detected == "human" else "Col1a1-style, first letter capital"
+        text = f"Detected <b>{self._detected}</b> from the gene names ({example})"
+        if self.species.value != self._detected:
+            text += f" - you've chosen <b>{self.species.value}</b> instead"
+        self.species_info.object = text + "."
 
     async def ensure_markers(self):
         """Downloads PanglaoDB the first time (so the tissue list can be filled in)."""
@@ -71,7 +92,9 @@ class CellTypingControls:
         """Runs cell typing on `cluster_col` (overlay up meanwhile) and remembers the
         result on the dataset, so the Spatial tab can show it."""
         await self.ensure_markers()
-        species = self.guess_species(dataset.adata.var_names)  # always from this dataset's genes
+        if self._detected is None:  # not preset by a file load: detect from this dataset now
+            self.guess_species(dataset.adata.var_names)
+        species = self.species.value
         async with self.busy.show("Suggesting cell types...", f"{self.tissue.value}, {species} markers"):
             result = await asyncio.to_thread(
                 celltyping.annotate_clusters, dataset, cluster_col, self._markers,
