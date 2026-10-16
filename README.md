@@ -30,6 +30,13 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   tissue to keep off-tissue types out; a table shows each cluster's suggestion, score and
   runners-up. A rough first guess to check against known markers - not a validated
   annotation. PanglaoDB is downloaded once (needs internet) and then kept in `cache/`.
+- **Your own marker sets** - a **Cell types** tab lists the marker gene sets cell typing uses
+  (PanglaoDB's for the chosen species/tissue) in an editable table: change a type's genes,
+  switch types off, add your own cell types, reset edits, or view a set as a pathway score.
+  It shows how many of each set's markers are measured in your data, and can re-run cell
+  typing on an existing clustering right away. The suggestions table lists the markers
+  behind each call. Your changes are saved in `cache/custom_markers.json` and used for every
+  dataset; the Leiden panel picks PanglaoDB only, your sets only, or both.
 - **Gene & Pathway view** - RGB-channel overlay of up to three genes or gene-set (pathway)
   scores at once, with autocomplete gene search, a description + gene list for each pathway,
   and a small histogram of the score distribution under each channel.
@@ -176,6 +183,7 @@ viewer/
   hexbin.py                  hexagonal binning of very large samples
   celltyping.py              PanglaoDB + decoupler cell-type suggestions for clusters
   celltype_controls.py       species / tissue widgets and the suggestions table
+  markers_page.py            "Cell types" tab: edit / add marker gene sets
   busy_overlay.py            full-page "working..." overlay
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches

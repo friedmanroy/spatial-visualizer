@@ -301,6 +301,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         controls.refresh_field_options(col, select=select)
         for listener in state.field_listeners:
             listener(dataset, col)
+        refresh_rerun_options()
 
     async def run_cell_typing(cluster_col: str):
         try:
@@ -314,6 +315,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             typing_results.object = f"<b>Cell typing failed:</b> {html.escape(str(exc))}"
             return
         typing_results.object = results_html(result)
+        rerun_select.value = cluster_col
+        for listener in state.celltype_listeners:
+            listener(result)
 
     # Settings are shared with the landing page; download PanglaoDB (first time only)
     # as soon as the panel is opened, so the tissue list is filled in.
@@ -324,10 +328,37 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         typing_results.object = results_html(latest)
         controls.refresh_field_options(latest.column, select=True)
 
+    # Label an existing clustering again - e.g. after editing marker sets on the Cell
+    # types tab - without re-running Leiden.
+    rerun_select = pn.widgets.Select(name="Clustering", options=[], sizing_mode="stretch_width")
+    rerun_btn = pn.widgets.Button(name="Re-run cell typing", width=150, margin=(23, 5, 5, 5))
+    rerun_hint = pn.pane.HTML(
+        "Re-run cell typing on an existing clustering, e.g. after editing marker sets on the "
+        "<b>Cell types</b> tab - no need to re-run Leiden.",
+        styles=_HINT_STYLE, sizing_mode="stretch_width", margin=(8, 5, 0, 5),
+    )
+    rerun_row = pn.Column(rerun_hint, pn.Row(rerun_select, rerun_btn, sizing_mode="stretch_width"),
+                          sizing_mode="stretch_width", margin=0)
+
+    def refresh_rerun_options():
+        options = clustering.clustering_columns(dataset.adata)
+        rerun_select.options = options
+        if options and rerun_select.value not in options:
+            rerun_select.value = options[-1]
+        rerun_row.visible = bool(options)
+
+    async def on_rerun(event):
+        if rerun_select.value:
+            await run_cell_typing(rerun_select.value)
+
+    rerun_btn.on_click(on_rerun)
+    refresh_rerun_options()
+    state.run_celltyping = run_cell_typing  # for the Cell types tab's own re-run button
+
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
         leiden_target, typing.layout, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
-        leiden_status, typing_results,
+        leiden_status, rerun_row, typing_results,
         title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
 

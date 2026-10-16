@@ -9,13 +9,14 @@ from .busy_overlay import BusyOverlay
 from .celltype_controls import CellTypingControls
 from .error_dialog import build_error_dialog
 from .landing import build_landing
+from .markers_page import build_markers_page
 from .pathways_page import build_pathways_page
 from .spatial_page import build_spatial_page
 from .state import AppState
 
 
 def build() -> pn.viewable.Viewable:
-    pn.extension()
+    pn.extension("tabulator")  # the Cell types tab's editable table needs its JS loaded up front
     state = AppState()
     state.busy = BusyOverlay()
     state.celltyping = CellTypingControls(state.busy)
@@ -25,8 +26,10 @@ def build() -> pn.viewable.Viewable:
         spatial_tab = build_spatial_page(state)
         embedding_tab = build_embedding_page(state)
         pathways_tab = build_pathways_page(state)
+        markers_tab = build_markers_page(state)
         tabs = pn.Tabs(
             ("Spatial", spatial_tab), ("scRNA / snRNA", embedding_tab), ("Pathways", pathways_tab),
+            ("Cell types", markers_tab),
             sizing_mode="stretch_both",
         )
         root.sizing_mode = "stretch_both"

@@ -14,9 +14,13 @@ markers fit it as well or better. These are suggestions to check against known
 markers, not a validated annotation.
 
 PanglaoDB is downloaded once (through OmniPath) and kept in cache/ for offline use.
+Marker sets the user edits or adds on the Cell types tab are kept in
+cache/custom_markers.json - only the differences from PanglaoDB (added types, changed
+gene lists, switched-off types), so a fresh PanglaoDB download never loses them.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -42,6 +46,18 @@ MAX_PVALUE = 0.05
 N_CANDIDATES = 3
 
 _MARKERS_CACHE = os.path.join(cache.CACHE_DIR, "panglaodb_markers.csv.gz")
+CUSTOM_MARKERS_PATH = os.path.join(cache.CACHE_DIR, "custom_markers.json")
+#: how many of a cluster's strongest markers for its suggested type are listed
+N_DRIVERS = 4
+
+#: which marker sets cell typing uses (label shown in the UI -> key)
+MARKER_SOURCES = {
+    "PanglaoDB + my edits": "both",
+    "PanglaoDB only": "panglao",
+    "My marker sets only": "custom",
+}
+#: where a marker set comes from, as shown in the Cell types table
+ORIGIN_PANGLAO, ORIGIN_EDITED, ORIGIN_ADDED = "PanglaoDB", "PanglaoDB, edited", "Added by you"
 
 
 def load_markers() -> pd.DataFrame:
@@ -106,6 +122,69 @@ def marker_sets(markers: pd.DataFrame, species: str, tissue: str, include_common
     return net.rename(columns={"cell_type": "source", "genesymbol": "target"})
 
 
+# ---- the user's own marker sets ------------------------------------------------------
+
+def load_custom_markers() -> dict:
+    """{"types": {name: {"genes": [...]}} (added types and edited PanglaoDB types),
+    "disabled": [names switched off]}."""
+    try:
+        with open(CUSTOM_MARKERS_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return {"types": dict(data.get("types", {})), "disabled": list(data.get("disabled", []))}
+
+
+def save_custom_markers(data: dict):
+    os.makedirs(cache.CACHE_DIR, exist_ok=True)
+    tmp = CUSTOM_MARKERS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, CUSTOM_MARKERS_PATH)  # never leave a half-written file behind
+
+
+@dataclass
+class MarkerSet:
+    name: str
+    genes: list[str]
+    origin: str  # ORIGIN_PANGLAO / ORIGIN_EDITED / ORIGIN_ADDED
+    enabled: bool
+    panglao_genes: list[str] | None  # PanglaoDB's own list (for "reset"), None if added
+
+
+def marker_table(markers: pd.DataFrame | None, species: str, tissue: str, include_common: bool,
+                 custom: dict, source: str) -> list[MarkerSet]:
+    """Every marker set cell typing would consider with these settings (switched-off
+    ones included, with enabled=False): PanglaoDB's for the species/tissue, with the
+    user's edits applied and their added types appended - or only the user's sets."""
+    panglao: dict[str, list[str]] = {}
+    if markers is not None:
+        net = marker_sets(markers, species, tissue, include_common)
+        panglao = {t: list(g) for t, g in net.groupby("source", sort=True)["target"]}
+    # "PanglaoDB only" means PanglaoDB untouched - the user's switched-off types too.
+    disabled = set(custom["disabled"]) if source != "panglao" else set()
+    rows: dict[str, MarkerSet] = {}
+    if source != "custom":
+        for name, genes in panglao.items():
+            rows[name] = MarkerSet(name, genes, ORIGIN_PANGLAO, name not in disabled, genes)
+    for name, info in custom["types"].items():
+        genes = list(info.get("genes", []))
+        if name in panglao:
+            if source != "panglao":
+                rows[name] = MarkerSet(name, genes, ORIGIN_EDITED, name not in disabled, panglao[name])
+        elif source != "panglao":
+            # An edited PanglaoDB type outside the chosen tissue still counts as one of
+            # "your" sets; a type you added is always included.
+            origin = ORIGIN_EDITED if info.get("edited_from_panglao") else ORIGIN_ADDED
+            rows[name] = MarkerSet(name, genes, origin, name not in disabled, None)
+    return sorted(rows.values(), key=lambda m: m.name.lower())
+
+
+def net_from_table(rows: list[MarkerSet]) -> pd.DataFrame:
+    pairs = [(m.name, g) for m in rows if m.enabled for g in m.genes]
+    return pd.DataFrame(pairs, columns=["source", "target"]).drop_duplicates()
+
+
 @dataclass
 class ClusterCall:
     cluster: str
@@ -113,6 +192,7 @@ class ClusterCall:
     label: str  # suggested cell type, or UNKNOWN
     candidates: list[tuple[str, float, int]] = field(default_factory=list)  # (type, score, markers measured)
     mean_confidence: float = float("nan")  # mean per-cell confidence in `label` (NaN if Unknown)
+    drivers: list[tuple[str, float]] = field(default_factory=list)  # (gene, standardised level) behind `label`
 
 
 @dataclass
@@ -137,10 +217,12 @@ def _cluster_means(adata, codes: np.ndarray, n_clusters: int) -> np.ndarray:
     return np.asarray(mean.todense()) if sp.issparse(mean) else np.asarray(mean)
 
 
-def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species: str,
-                      tissue: str, include_common: bool = True, report=lambda text: None) -> CellTypingResult:
-    """Suggests a cell type per cluster of obs[`cluster_col`], stores each cell's
-    suggestion as obs[f"{cluster_col}_celltype"], and returns the per-cluster calls."""
+def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str,
+                      tissue: str, report=lambda text: None) -> CellTypingResult:
+    """Suggests a cell type per cluster of obs[`cluster_col`] from the (cell type, gene)
+    pairs in `net` (see marker_table / net_from_table), stores each cell's suggestion as
+    obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. `tissue` is only
+    a label for the results."""
     import decoupler as dc
 
     adata = dataset.adata
@@ -150,17 +232,17 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
 
     # PanglaoDB uses human symbols; match them to this dataset's own spelling (case-
     # insensitively, which also covers most mouse symbols) and drop unmeasured ones.
-    report("Matching PanglaoDB marker genes to this data's genes")
-    net = marker_sets(markers, species, tissue, include_common)
+    report("Matching the marker genes to this data's genes")
+    net = net.copy()
     net["target"] = [dataset.match_gene(g) for g in net["target"]]
     net = net.dropna(subset=["target"]).drop_duplicates()
     measured = net.groupby("source").size()
     net = net[net["source"].isin(measured[measured >= MIN_MARKERS].index)]
     if net.empty:
         raise ValueError(
-            f"None of the {tissue.lower()} cell types has at least {MIN_MARKERS} of its "
-            "marker genes measured in this data - try 'All tissues', or the gene panel "
-            "may be too small for marker-based typing."
+            f"None of the cell types considered has at least {MIN_MARKERS} of its marker "
+            "genes measured in this data - try 'All tissues', check the marker sets on the "
+            "Cell types tab, or the gene panel may be too small for marker-based typing."
         )
 
     genes = sorted(set(net["target"]))
@@ -178,9 +260,16 @@ def annotate_clusters(dataset, cluster_col: str, markers: pd.DataFrame, species:
         ranked = scores.loc[name].sort_values(ascending=False)
         top = ranked.index[0]
         significant = ranked.iloc[0] > 0 and pvalues.loc[name, top] < MAX_PVALUE
+        label = top if significant else UNKNOWN
+        drivers = []
+        if label != UNKNOWN:  # the type's markers that stand out most in this cluster
+            type_genes = [g for g in net.loc[net["source"] == label, "target"] if g in scaled.columns]
+            levels = scaled.loc[name, type_genes].sort_values(ascending=False)
+            drivers = [(g, float(v)) for g, v in levels.items() if v > 0][:N_DRIVERS]
         calls.append(ClusterCall(
-            cluster=name, n_cells=int(sizes[i]), label=top if significant else UNKNOWN,
+            cluster=name, n_cells=int(sizes[i]), label=label,
             candidates=[(t, float(ranked[t]), int(measured[t])) for t in ranked.index[:N_CANDIDATES]],
+            drivers=drivers,
         ))
 
     column = f"{cluster_col}_celltype"

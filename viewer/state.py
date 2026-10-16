@@ -161,3 +161,8 @@ class AppState:
         # Cell-typing settings (celltype_controls.CellTypingControls), shared by the
         # landing page and the Spatial tab so choices carry over.
         self.celltyping = None
+        # Called with each new celltyping.CellTypingResult (e.g. to refresh the Cell types tab).
+        self.celltype_listeners: list = []
+        # async (cluster_col) -> None: cell-types a clustering of the spatial data and
+        # shows the result (set by the Spatial tab, used by the Cell types tab).
+        self.run_celltyping = None

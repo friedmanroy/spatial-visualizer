@@ -72,6 +72,13 @@ def neighbors_graph(adata, n_pcs: int, n_neighbors: int, report=_no_report):
     return tmp
 
 
+def clustering_columns(adata) -> list[str]:
+    """obs columns holding Leiden clusterings made by the viewer (not the cell-type /
+    confidence columns derived from them)."""
+    return [c for c in adata.obs.columns
+            if c.startswith("leiden_res") and not c.endswith(("_celltype", "_confidence"))]
+
+
 def leiden_column_name(resolution: float, hex_width: float | None = None) -> str:
     name = f"leiden_res{resolution:g}"
     return name if hex_width is None else f"{name}_hex{hex_width:g}"

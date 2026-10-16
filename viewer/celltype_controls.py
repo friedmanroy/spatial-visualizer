@@ -42,6 +42,11 @@ class CellTypingControls:
             description="Only cell types from this tissue are considered - avoids e.g. brain cell types "
                         "being suggested for liver.",
         )
+        self.source = pn.widgets.Select(
+            name="Marker sets", options=celltyping.MARKER_SOURCES, value="both",
+            sizing_mode="stretch_width",
+            description="Your own and edited marker sets are managed on the Cell types tab.",
+        )
         self.include_common = pn.widgets.Checkbox(
             name="Also consider immune, blood, vessel and connective-tissue cells",
             value=True, visible=False, margin=(4, 5, 4, 5),
@@ -51,12 +56,24 @@ class CellTypingControls:
         )
         self._options = pn.Column(
             pn.Row(self.species, self.tissue, sizing_mode="stretch_width", margin=0),
-            self.species_info, self.include_common, sizing_mode="stretch_width", margin=(0, 0, 0, 20),
+            self.species_info, self.include_common, self.source, sizing_mode="stretch_width", margin=(0, 0, 0, 20),
         )
         self.enabled.param.watch(lambda e: setattr(self._options, "visible", e.new), "value")
         self.layout = pn.Column(self.enabled, self.hint, self._options, sizing_mode="stretch_width", margin=0)
         if celltyping.markers_available_offline():
             self._set_markers(celltyping.load_markers())
+
+    def marker_table(self) -> list[celltyping.MarkerSet]:
+        """The marker sets cell typing would use with the current settings."""
+        return celltyping.marker_table(
+            self._markers, self.species.value, self.tissue.value, self.include_common.value,
+            celltyping.load_custom_markers(), self.source.value,
+        )
+
+    @property
+    def settings_label(self) -> str:
+        source = {v: k for k, v in celltyping.MARKER_SOURCES.items()}[self.source.value]
+        return f"{self.tissue.value}, {self.species.value} markers ({source})"
 
     def _set_markers(self, markers):
         self._markers = markers
@@ -95,10 +112,11 @@ class CellTypingControls:
         if self._detected is None:  # not preset by a file load: detect from this dataset now
             self.guess_species(dataset.adata.var_names)
         species = self.species.value
-        async with self.busy.show("Suggesting cell types...", f"{self.tissue.value}, {species} markers"):
+        net = celltyping.net_from_table(self.marker_table())
+        async with self.busy.show("Suggesting cell types...", self.settings_label):
             result = await asyncio.to_thread(
-                celltyping.annotate_clusters, dataset, cluster_col, self._markers,
-                species, self.tissue.value, self.include_common.value, report=self.busy.step,
+                celltyping.annotate_clusters, dataset, cluster_col, net,
+                species, self.settings_label, report=self.busy.step,
             )
         dataset.celltype_results[result.column] = result
         return result
@@ -114,6 +132,11 @@ def results_html(result: celltyping.CellTypingResult) -> str:
             label = f'<span style="color:#888">{label}</span>'
         score = f"{best[1]:.1f}" if best else ""
         others = ", ".join(f"{html.escape(t)} ({s:.1f})" for t, s, _ in call.candidates[1:])
+        if call.drivers:
+            others = ("markers: " + ", ".join(html.escape(g) for g, _ in call.drivers)
+                      + (f"<br>next: {others}" if others else ""))
+        elif others:
+            others = f"next: {others}"
         conf = call.mean_confidence
         conf_text = "" if conf != conf else f"{conf:.0%}"  # NaN (Unknown) -> blank
         rows.append(
@@ -125,8 +148,8 @@ def results_html(result: celltyping.CellTypingResult) -> str:
     return (
         f"<div style='font-size:12px;margin-bottom:4px'><b>Suggested cell types</b> "
         f"(<code>{html.escape(result.column)}</code>) - {html.escape(result.tissue)}, "
-        f"{result.species}, {result.n_types_scored} cell types scored. Score = how strongly the "
-        f"type's markers stand out in that cluster; gray lines are the next-best types. "
+        f"{result.n_types_scored} cell types scored. Score = how strongly the "
+        f"type's markers stand out in that cluster; gray lines are its strongest markers there and the next-best types. "
         f"Confidence = the cluster's mean per-cell confidence (also shown when hovering a "
         f"cell, and as the field <code>{html.escape(result.confidence_column)}</code>).</div>"
         "<div style='max-height:260px;overflow-y:auto'>"

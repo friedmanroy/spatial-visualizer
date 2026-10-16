@@ -110,6 +110,8 @@ def build_pathways_page(state) -> pn.viewable.Viewable:
     save_btn.on_click(on_save)
     remove_btn.on_click(on_remove)
     refresh_custom_list()
+    # Pathways can also be added elsewhere (Cell types tab -> "Show as pathway").
+    state.pathway_listeners.append(lambda name: refresh_custom_list())
 
     return pn.Column(
         "### Add a pathway",
