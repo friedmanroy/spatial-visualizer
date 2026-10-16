@@ -6,7 +6,6 @@
 # in this folder. Either way uv provides a private Python + packages - nothing is
 # installed system-wide and no admin rights are needed.
 
-SOURCE="https://github.com/friedmanroy/spatial-visualizer/archive/refs/heads/main.zip"
 PYTHON_VERSION="3.13"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -32,13 +31,6 @@ echo "The first launch downloads everything it needs and can take a few minutes.
 echo "The app opens in your browser. Closing the browser tab stops it."
 echo
 
-if curl -sfIL --max-time 10 "$SOURCE" >/dev/null 2>&1; then
-    echo "Using the latest version from GitHub."
-    uvx --managed-python --python "$PYTHON_VERSION" \
-        --refresh-package spatial-visualizer \
-        --from "$SOURCE" spatial-visualizer || fail
-else
-    echo "Using the version in this folder."
-    uv run --managed-python --python "$PYTHON_VERSION" \
-        --project "$HERE" spatial-visualizer || fail
-fi
+echo "Using the version in this folder."
+uv run --managed-python --python "$PYTHON_VERSION" \
+    --project "$HERE" spatial-visualizer || fail

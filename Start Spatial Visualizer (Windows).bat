@@ -9,7 +9,6 @@ rem installed system-wide and no admin rights are needed.
 setlocal
 title Spatial Transcriptomics Visualizer
 
-set "SOURCE=https://github.com/friedmanroy/spatial-visualizer/archive/refs/heads/main.zip"
 set "PYTHON_VERSION=3.13"
 
 set "HERE=%~dp0"
@@ -30,15 +29,6 @@ echo The first launch downloads everything it needs and can take a few minutes.
 echo The app opens in your browser. Closing the browser tab stops it.
 echo.
 
-curl.exe -sfIL --max-time 10 "%SOURCE%" >nul 2>nul
-if errorlevel 1 goto :local
-
-echo Using the latest version from GitHub.
-uvx --managed-python --python %PYTHON_VERSION% --refresh-package spatial-visualizer --from "%SOURCE%" spatial-visualizer
-if errorlevel 1 goto :fail
-goto :eof
-
-:local
 echo Using the version in this folder.
 uv run --managed-python --python %PYTHON_VERSION% --project "%HERE%" spatial-visualizer
 if errorlevel 1 goto :fail
