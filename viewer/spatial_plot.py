@@ -132,6 +132,8 @@ def make_figure(title: str = "Spatial view") -> figure:
         tools="pan,wheel_zoom,box_zoom,reset,save",
         sizing_mode="stretch_both",
         background_fill_color=BG_FIELD,
+        # GPU drawing: needed for panning smoothly over tens of thousands of markers.
+        output_backend="webgl",
     )
     fig.y_range.flipped = True
     fig.xgrid.visible = False

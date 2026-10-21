@@ -412,16 +412,16 @@ class ColorControls:
             self.on_change()
 
     def compute_colors(self, idx: np.ndarray | None = None, binning=None) -> np.ndarray:
-        """Hex colors for every cell, or - given a sample's cell indices `idx` and its
+        """Packed colors (see colors.pack_rgb) for every cell, or - given a sample's cell indices `idx` and its
         hexbin.HexBinning - for every bin of that sample: the bin's mean gene/pathway
         value, or its most common category among the selected ones."""
         dataset = self.get_dataset()
         if dataset is None:
-            return np.array([], dtype=object)
+            return np.array([], dtype=np.uint32)
         n = dataset.adata.n_obs if binning is None else binning.n_bins
         if self.mode.value == "Field":
             if not self.field_select.value:
-                return np.full(n, GRAY, dtype=object)
+                return np.full(n, colors_mod.GRAY_RGBA, dtype=np.uint32)
             spec = dataset.classify(self.field_select.value)
             active = self._active_labels()
             if binning is None:
@@ -464,7 +464,7 @@ class ColorControls:
         if shown is None:
             return colors_mod.compute_rgb_colors(n, channels)
         # Scale colors over the shown cells/bins only, so the contrast reflects them.
-        colors = np.full(n, GRAY, dtype=object)
+        colors = np.full(n, colors_mod.GRAY_RGBA, dtype=np.uint32)
         if shown.any():
             colors[shown] = colors_mod.compute_rgb_colors(int(shown.sum()), {
                 label: (None if values is None else values[shown], bipolar)

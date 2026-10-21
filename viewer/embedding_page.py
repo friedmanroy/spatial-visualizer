@@ -20,7 +20,7 @@ from bokeh.plotting import figure
 
 from . import clustering, hover, spatial_plot
 from .color_controls import ColorControls, section_label
-from .colors import GRAY
+from .colors import GRAY_RGBA
 from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
 
@@ -86,6 +86,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     fig = figure(
         title=None, tools="pan,wheel_zoom,box_zoom,reset,save",
         sizing_mode="stretch_both", background_fill_color=spatial_plot.BG_FIELD,
+        output_backend="webgl",
     )
     fig.xgrid.visible = False
     fig.ygrid.visible = False
@@ -127,13 +128,13 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     def _current_colors(mat):
         colors = controls.compute_colors()
         if len(colors) == 0:
-            colors = np.full(mat.shape[0], GRAY, dtype=object)
+            colors = np.full(mat.shape[0], GRAY_RGBA, dtype=np.uint32)
         return colors
 
     def _update_count(colors, n):
         header = f"{n:,} cells · {embedding_kind.value} · {controls.coloring_summary_html()}"
         if controls.mode.value == "Field" and controls.field_select.value:
-            n_shown = int(np.sum(np.asarray(colors) != GRAY))
+            n_shown = int(np.sum(colors != GRAY_RGBA))
             header += f" · <b>{n_shown:,}</b> of {n:,} cells in the selected categories"
         plot_header.object = header
 
@@ -148,7 +149,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         yi = y_axis.value if y_axis.value is not None else min(1, mat.shape[1] - 1)
         colors = _current_colors(mat)
         hover_cols, hover_meta = controls.hover_data()
-        source.data = {"x": mat[:, xi], "y": mat[:, yi], "fill_color": list(colors),
+        source.data = {"x": mat[:, xi], "y": mat[:, yi], "fill_color": colors,
                        **hover.empty_columns(mat.shape[0]), **hover_cols}
         hover.set_meta(hover_formatter, hover_meta)
         update_background()
@@ -162,7 +163,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         if mat is None or ds is None:
             return
         colors = _current_colors(mat)
-        source.data["fill_color"] = list(colors)
+        source.data["fill_color"] = colors
         hover_cols, hover_meta = controls.hover_data()
         for key, values in hover_cols.items():
             source.data[key] = values

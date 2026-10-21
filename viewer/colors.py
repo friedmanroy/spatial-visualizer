@@ -6,9 +6,37 @@ No obs/uns column names are hardcoded here beyond the scanpy convention of looki
 from __future__ import annotations
 
 import numpy as np
+from bokeh.colors import named
 from bokeh.palettes import Category20_20, Category20b_20, Turbo256, viridis
 
 GRAY = "#BEBEBE"
+
+
+# ---- packed colors: the plots get one uint32 per cell (0xRRGGBBAA), sent as a binary
+# buffer instead of a list of hex strings ----
+
+def pack_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Opaque packed colors from 0-255 channel arrays, in BokehJS's uint32 layout."""
+    abgr = np.empty((len(r), 4), dtype=np.uint8)  # little-endian bytes of 0xRRGGBBAA
+    abgr[:, 0], abgr[:, 1], abgr[:, 2], abgr[:, 3] = 255, b, g, r
+    return abgr.view("<u4").ravel()
+
+
+def pack_color(color: str) -> np.uint32:
+    """A hex (#rgb, #rrggbb, #rrggbbaa) or CSS-named color as one packed opaque color."""
+    color = color.strip().lower()
+    if color.startswith("#"):
+        h = color[1:]
+        if len(h) in (3, 4):
+            h = "".join(c * 2 for c in h)
+        rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    else:
+        c = getattr(named, color, None)
+        rgb = [c.r, c.g, c.b] if c is not None else [190, 190, 190]
+    return pack_rgb(*(np.array([v]) for v in rgb))[0]
+
+
+GRAY_RGBA = pack_color(GRAY)
 
 
 def _to_rgb_hex(color: str) -> str:
@@ -71,15 +99,16 @@ def assign_sequential_colors(labels: list[str]) -> dict[str, str]:
 
 
 def field_fill_colors(field_spec, active_labels: set[str], codes: np.ndarray | None = None) -> np.ndarray:
-    """Vectorized per-cell hex color array for a categorical/binned FieldSpec.
+    """Vectorized per-cell packed color array for a categorical/binned FieldSpec.
 
     Rows whose category/bin is not in ``active_labels`` (or missing) are gray.
     ``codes`` overrides the spec's own per-cell codes (e.g. per-hex-bin codes).
     """
     categories = field_spec.categories
-    lut = [field_spec.colors.get(c, GRAY) if c in active_labels else GRAY for c in categories]
-    lut.append(GRAY)  # code == -1 (missing) maps here
-    lut_arr = np.array(lut, dtype=object)
+    lut = [pack_color(field_spec.colors.get(c, GRAY)) if c in active_labels else GRAY_RGBA
+           for c in categories]
+    lut.append(GRAY_RGBA)  # code == -1 (missing) maps here
+    lut_arr = np.array(lut, dtype=np.uint32)
     codes = field_spec.codes if codes is None else codes
     idx = np.where(codes < 0, len(categories), codes)
     return lut_arr[idx]
@@ -95,7 +124,7 @@ CHANNEL_VECTORS = {
 
 
 def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool]]) -> np.ndarray:
-    """Blend up to three channels ('R', 'G', 'B') of per-cell values into hex colors.
+    """Blend up to three channels ('R', 'G', 'B') of per-cell values into packed colors.
 
     ``channels`` maps a channel label to (values, bipolar). ``values`` is a length-n
     array or None (channel unused). If ``bipolar`` the values are scaled symmetrically
@@ -122,8 +151,5 @@ def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool
                 t = np.zeros_like(values)
             rgb += t[:, None] * primary[None, :]
     rgb = np.clip(rgb, 0, 1)
-    r = (rgb[:, 0] * 255).astype(int)
-    g = (rgb[:, 1] * 255).astype(int)
-    b = (rgb[:, 2] * 255).astype(int)
-    hexcolors = np.array([f"#{ri:02x}{gi:02x}{bi:02x}" for ri, gi, bi in zip(r, g, b)], dtype=object)
-    return hexcolors
+    rgb = (rgb * 255).astype(np.uint8)
+    return pack_rgb(rgb[:, 0], rgb[:, 1], rgb[:, 2])
