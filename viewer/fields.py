@@ -66,12 +66,22 @@ def _classify_categorical(adata, colname: str, series: pd.Series) -> FieldSpec:
 
 def _classify_binned(series: pd.Series) -> FieldSpec:
     numeric = pd.to_numeric(series, errors="coerce")
-    try:
-        binned = pd.cut(numeric, bins=N_BINS)
-    except ValueError:
-        binned = pd.cut(numeric, bins=1)
+    # Equal-count (quantile) bins, so long-tailed fields like total counts don't put
+    # nearly every cell in the lowest bin. Heavily tied values (e.g. many zeros) merge
+    # bins, giving fewer than N_BINS.
+    values = numeric.to_numpy(dtype=float)
+    finite = values[np.isfinite(values)]
+    edges = np.unique(np.quantile(finite, np.linspace(0, 1, N_BINS + 1))) if len(finite) else np.array([])
+    if len(edges) < 2:  # no values, or all the same: one bin
+        edges = np.array([finite.min(), finite.max()]) if len(finite) else np.array([0.0, 1.0])
+    binned = pd.cut(numeric, bins=edges, include_lowest=True, duplicates="drop")
     cats = binned.cat.categories
-    labels = [f"{iv.left:.3g} – {iv.right:.3g}" for iv in cats]
+    # Narrow quantiles can round to the same label; add digits until they're distinct.
+    # (Labels use the edges themselves: include_lowest nudges the first interval's left end.)
+    for digits in range(3, 10):
+        labels = [f"{lo:.{digits}g} – {hi:.{digits}g}" for lo, hi in zip(edges[:-1], edges[1:])]
+        if len(set(labels)) == len(labels):
+            break
     codes = binned.cat.codes.to_numpy().astype(np.int32)
     palette = colors_mod.assign_sequential_colors(labels)
     edges = np.array([iv.right for iv in cats], dtype=float)
