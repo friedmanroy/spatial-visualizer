@@ -10,7 +10,8 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 
 - **Generic field coloring** - pick any obs column; categorical fields get one checkbox +
   clickable color swatch per category (click a swatch to open the color picker), continuous
-  fields are automatically binned into 10 groups.
+  fields are automatically binned into 10 groups with equal numbers of cells (so long-tailed
+  fields such as total counts still spread across the colors).
 - **Cell shapes** - draw cells as hexagons, squares or circles. **Auto** (the default)
   detects per sample whether the spots sit on a hexagonal grid (e.g. Visium), a square grid
   (e.g. binned Visium HD / Stereo-seq) or neither (e.g. segmented cells, Slide-seq -> circles).
@@ -20,7 +21,14 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   browse between them with a dropdown or Prev/Next.
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
   (about 25,000 per sample by default, adjustable under **Display settings**): each bin shows
-  its cells' mean expression, or their most common selected category.
+  its cells' mean expression, or their most common selected category. Zoom in until at most
+  50,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
+  by default), colored per cell by expression; clusters and cell types computed on the
+  hexagons color each cell like its hexagon.
+- **Top genes in view** - the header above the plot lists the 4 most expressed genes among
+  the cells currently in view, updating as you pan and zoom.
+- **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
+  (with the confidence for suggested cell types), or its values for the genes / pathways shown.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). With hex binning on,
   the bins are clustered (much faster), and every cell gets its bin's cluster.
@@ -52,7 +60,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
 - **Loading overlay** - long steps (loading, clustering, PCA/UMAP...) gray out the page with a
-  spinner and a line saying what's running.
+  checklist of the step's stages and a live timer for each.
 - **Error dialog** - any unexpected error shows a popup with the traceback instead of silently
   freezing the page.
 
@@ -88,13 +96,10 @@ It installs [uv](https://docs.astral.sh/uv/) into your user folder (once). uv th
 private copy of Python and the required packages. Nothing is installed system-wide, and any
 Python you already have is left untouched.
 
-Which version of the app runs:
-- If the app's GitHub page can be reached, the launcher runs the **latest version** from there,
-  so you get updates automatically.
-- Otherwise (the repository is private, or you're offline), it runs the version **in this folder**.
+The launcher always runs the version of the app **in this folder**; to update, get a newer zip.
 
-Saved colors and field choices are kept in the `cache/` folder inside this folder in both
-cases. To keep them when switching to a newer zip, copy `cache/` into the new folder.
+Saved colors and field choices are kept in the `cache/` folder inside this folder. To keep
+them when switching to a newer zip, copy `cache/` into the new folder.
 To remove everything: delete this folder, run `uv cache clean`, then delete uv itself (see
 the uv docs).
 </details>
@@ -108,12 +113,8 @@ Send people a zip of the project. The simplest clean way (only tracked files, so
 git archive --format=zip --prefix=spatial-visualizer/ -o ~/Desktop/spatial-visualizer.zip HEAD
 ```
 
-`git archive` only includes committed changes. Before the repository is public, users run
-the copy in their zip, so to update them you send a new zip. After the repository is public
-(the launchers check `SOURCE`, the `main` branch's zip on GitHub), every launch picks up
-whatever is on `main` automatically. Users don't need to do anything, and they keep using the
-zip they already have. To have users follow a more stable branch instead, change `SOURCE` in
-both launchers before sending the zip.
+`git archive` only includes committed changes. Users run the copy in their zip, so to update
+them you send a new zip.
 
 ## Getting started - for developers
 
