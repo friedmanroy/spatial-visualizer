@@ -15,6 +15,7 @@ import panel as pn
 
 from . import colors as colors_mod
 from . import histogram as histogram_mod
+from . import hover
 from . import pathways as pathways_mod
 
 GRAY = colors_mod.GRAY
@@ -27,7 +28,8 @@ _CHANNEL_LABEL_WIDTH = 62
 HINT_STYLE = {"font-size": "12px", "color": "#555", "line-height": "1.35"}
 _GENE_HINT = (
     "Each channel colors cells by one gene: brighter = higher expression. "
-    "Use up to three channels; overlapping expression mixes the colors."
+    "Use up to three channels; overlapping expression mixes the colors. "
+    "On the Spatial tab, with no genes chosen, click a cell to show its 3 most expressed."
 )
 _PATHWAY_HINT = (
     "Each channel colors cells by a pathway score: its color where the pathway's genes "
@@ -125,6 +127,7 @@ class ColorControls:
         )
 
         self.channel_widgets: dict[str, dict] = {}
+        self._hold_fire = False  # set while several channels change at once (set_genes)
         channel_blocks = [self.expr_mode, self.expr_hint, self.filter_note]
         for label in ("R", "G", "B"):
             gene_input = pn.widgets.AutocompleteInput(
@@ -407,7 +410,24 @@ class ColorControls:
     def _active_labels(self) -> set:
         return {cat for cat, cb in self._value_checkboxes.items() if cb.value}
 
+    def no_genes_chosen(self) -> bool:
+        """In the Gene view with every channel empty?"""
+        return (self.mode.value == "Gene & Pathway" and self.expr_mode.value == "Gene"
+                and not any(w["gene"].value.strip() for w in self.channel_widgets.values()))
+
+    def set_genes(self, genes: list[str]):
+        """Puts `genes` in the red, green and blue channels (in that order), recoloring once."""
+        self._hold_fire = True
+        try:
+            for w, gene in zip(self.channel_widgets.values(), genes):
+                w["gene"].value = gene
+        finally:
+            self._hold_fire = False
+        self._fire()
+
     def _fire(self, *events):
+        if self._hold_fire:
+            return
         with pn.io.hold():
             self.on_change()
 
@@ -529,7 +549,18 @@ class ColorControls:
                 values = take(np.where(mask, values, np.nan) if mask is not None else values)
             cols[f"hv_{label.lower()}"] = np.asarray(values, dtype=np.float32)
             channels.append([label, name])
-        return cols, {"kind": "channels" if channels else "none", "channels": channels, "binned": binned}
+        # Each cell's (or bin's) most expressed genes, as codes into a list of just the
+        # genes that occur, so the tooltip's labels stay short.
+        top = dataset.top_genes(idx, binning, k=hover.N_TOP_GENES)
+        used, codes = np.unique(top, return_inverse=True)
+        codes = codes.reshape(top.shape).astype(np.int32)
+        offset = 1 if len(used) and used[0] == -1 else 0  # -1 (none) is the smallest
+        codes -= offset
+        for j in range(top.shape[1]):
+            cols[f"hv_t{j}"] = codes[:, j]
+        names = [str(dataset.adata.var_names[g]) for g in used[offset:]]
+        return cols, {"kind": "channels" if channels else "none", "channels": channels, "binned": binned,
+                      "top": names}
 
     def category_filter(self) -> tuple[str, int, int] | None:
         """(field, number of selected categories, number of categories) when some

@@ -13,6 +13,46 @@ from . import fields as fields_mod
 from . import hexbin
 from . import spatial_plot
 
+#: how many recent top-genes results Dataset.top_genes keeps
+_TOP_GENES_CACHE_SIZE = 8
+
+
+def top_k_per_row(X, k: int, chunk: int = 10_000) -> np.ndarray:
+    """(n_rows, k) column indices of each row's k largest values, largest first; -1
+    where a row has fewer than k positive values. Sparse rows are padded to the longest
+    row's nonzero count (per chunk) rather than densified over all columns."""
+    n = X.shape[0]
+    out = np.full((n, k), -1, dtype=np.int32)
+    for start in range(0, n, chunk):
+        block = X[start:start + chunk]
+        m = block.shape[0]
+        if sp.issparse(block):
+            block = sp.csr_matrix(block)
+            lens = np.diff(block.indptr)
+            width = max(int(lens.max(initial=0)), k)
+            vals = np.full((m, width), -np.inf, dtype=np.float32)
+            cols = np.full((m, width), -1, dtype=np.int32)
+            rows = np.repeat(np.arange(m), lens)
+            pos = np.arange(block.nnz) - np.repeat(block.indptr[:-1], lens)
+            vals[rows, pos] = block.data
+            cols[rows, pos] = block.indices
+        else:
+            vals = np.asarray(block, dtype=np.float32)
+            cols = np.broadcast_to(np.arange(vals.shape[1], dtype=np.int32), vals.shape)
+            if vals.shape[1] < k:
+                pad = k - vals.shape[1]
+                vals = np.pad(vals, ((0, 0), (0, pad)), constant_values=-np.inf)
+                cols = np.pad(cols, ((0, 0), (0, pad)), constant_values=-1)
+        top = np.argpartition(-vals, k - 1, axis=1)[:, :k] if vals.shape[1] > k else np.argsort(-vals, axis=1)
+        top_vals = np.take_along_axis(vals, top, axis=1)
+        order = np.argsort(-top_vals, axis=1, kind="stable")
+        top = np.take_along_axis(top, order, axis=1)
+        top_vals = np.take_along_axis(top_vals, order, axis=1)
+        top_cols = np.take_along_axis(cols, top, axis=1)
+        top_cols[~(top_vals > 0)] = -1
+        out[start:start + m] = top_cols
+    return out
+
 
 class Dataset:
     """Wraps one AnnData plus the caches used by the coloring/plotting machinery.
@@ -33,6 +73,7 @@ class Dataset:
         self._gene_cache: dict[str, np.ndarray] = {}
         self._var_upper_lookup: dict[str, str] | None = None
         self._top_variable_genes: dict[int, list[str]] = {}
+        self._top_genes_cache: dict[tuple, np.ndarray] = {}
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
         # obs column -> celltyping.CellTypingResult, for showing per-cluster suggestions.
         self.celltype_results: dict = {}
@@ -143,6 +184,22 @@ class Dataset:
             arr = np.asarray(col.todense()).ravel() if sp.issparse(col) else np.asarray(col).ravel()
             self._gene_cache[matched] = arr
         return self._gene_cache[matched]
+
+
+    def top_genes(self, rows: np.ndarray | None = None, binning=None, k: int = 5) -> np.ndarray:
+        """(n, k) var indices of the k most expressed genes of each cell in `rows` (all
+        cells if None) - or, given the binning of those cells, of each bin (its cells'
+        mean). -1 where fewer than k genes are expressed. Recent results are cached, so
+        recoloring doesn't recompute them."""
+        key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning))
+        if key not in self._top_genes_cache:
+            X = self.adata.X if rows is None else self.adata.X[rows]
+            if binning is not None:
+                X = binning.mean_matrix @ X
+            if len(self._top_genes_cache) >= _TOP_GENES_CACHE_SIZE:
+                self._top_genes_cache.pop(next(iter(self._top_genes_cache)))
+            self._top_genes_cache[key] = top_k_per_row(X, k)
+        return self._top_genes_cache[key]
 
 
 class AppState:

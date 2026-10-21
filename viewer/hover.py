@@ -1,6 +1,6 @@
 """Hover tooltips for the cell plots: what the cell (or hex bin) under the mouse is -
 its category in the current field (and, for suggested cell types, the confidence in
-it), or its values for the genes / pathways being shown.
+it), or its values for the genes / pathways being shown plus its most expressed genes.
 
 Only numbers go into the plot's data source (category codes, confidences, channel
 values), which Bokeh sends to the browser as compact binary arrays; one small JS
@@ -8,13 +8,20 @@ formatter turns them into text using labels sent once per field change.
 """
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from bokeh.models import CustomJSHover, HoverTool
 
+#: how many of each cell's (or bin's) most expressed genes the Gene & Pathway tooltip lists
+N_TOP_GENES = 5
+#: columns holding those genes, as codes into the tooltip meta's `top` names (-1: none)
+TOP_COLUMNS = tuple(f"hv_t{j}" for j in range(N_TOP_GENES))
 #: hover columns in the plot's ColumnDataSource, all one value per drawn cell / bin
-COLUMNS = ("hv_code", "hv_conf", "hv_share", "hv_n", "hv_r", "hv_g", "hv_b")
+COLUMNS = ("hv_code", "hv_conf", "hv_share", "hv_n", "hv_r", "hv_g", "hv_b", *TOP_COLUMNS)
 
 _JS = """
+const TOP_COLUMNS = __TOP_COLUMNS__;
 const i = special_vars.index;
 const d = source.data;
 const m = meta;
@@ -35,14 +42,23 @@ if (m.kind === 'field') {
         lines.push(name + ': ' + (isNaN(v) ? 'not shown' : v.toFixed(2)) + (m.binned ? ' (mean)' : ''));
     }
 }
+if (m.top) {
+    const top = [];
+    for (const col of TOP_COLUMNS) {
+        const c = d[col] ? d[col][i] : -1;
+        if (c >= 0) top.push(m.top[c]);
+    }
+    if (top.length) lines.push((m.binned ? 'Most expressed in this bin: ' : 'Most expressed: ') + top.join(', '));
+}
 return lines.join('\\n');
-"""
+""".replace("__TOP_COLUMNS__", json.dumps(list(TOP_COLUMNS)))
 
 
 def empty_columns(n: int) -> dict[str, np.ndarray]:
     nan = np.full(n, np.nan, dtype=np.float32)
     return {"hv_code": np.full(n, -1, dtype=np.int32), "hv_conf": nan, "hv_share": nan,
-            "hv_n": np.ones(n, dtype=np.int32), "hv_r": nan, "hv_g": nan, "hv_b": nan}
+            "hv_n": np.ones(n, dtype=np.int32), "hv_r": nan, "hv_g": nan, "hv_b": nan,
+            **{col: np.full(n, -1, dtype=np.int32) for col in TOP_COLUMNS}}
 
 
 def add_hover(fig, renderers, source) -> CustomJSHover:

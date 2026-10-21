@@ -9,10 +9,11 @@ import traceback
 
 import numpy as np
 import panel as pn
-from bokeh.events import RangesUpdate
+from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource
 
 from . import clustering, hexbin, hover, spatial_plot
+from .state import top_k_per_row
 from .color_controls import ColorControls
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
@@ -334,6 +335,41 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     fig.on_event(RangesUpdate, on_ranges_update)
 
+    def top_genes_at(x: float, y: float, k: int) -> list[str]:
+        """The k most expressed genes of the cell - or, where bins are drawn, the bin -
+        under (x, y); empty if there's none there."""
+        sample = sample_select.value
+        idx, coords, lattice = get_geometry(sample)
+        binning = get_binning(sample)
+        point = np.array([[x, y]])
+        on_cells = binning is None or (detail["cells"] is not None and _in_box(point, detail["box"])[0])
+        if on_cells:
+            candidates = np.arange(len(idx)) if binning is None else detail["cells"]
+            centers, reach = coords[candidates], lattice.spacing * max(marker_scale.value, 1.0)
+        else:
+            centers, reach = binning.centers, binning.width
+        if len(centers) == 0:
+            return []
+        dist2 = ((centers - point) ** 2).sum(axis=1)
+        j = int(np.argmin(dist2))
+        if dist2[j] > reach ** 2:
+            return []
+        rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == j]
+        profile = dataset.adata.X[rows].mean(axis=0)  # a bin's cells' mean
+        top = top_k_per_row(np.asarray(profile).reshape(1, -1), k)[0]
+        return [str(dataset.adata.var_names[g]) for g in top if g >= 0]
+
+    def on_tap(event):
+        """In the Gene view with no genes chosen yet, clicking a cell (or bin) colors by
+        its CLICK_GENES most expressed genes."""
+        if not controls.no_genes_chosen():
+            return
+        genes = top_genes_at(event.x, event.y, CLICK_GENES)
+        if genes:
+            controls.set_genes(genes)
+
+    fig.on_event(Tap, on_tap)
+
     def update_count(colors, idx, binning):
         """The header above the plot: which sample, how many cells, what they're
         colored by, and (in Field mode) how many are in the selected categories."""
@@ -598,6 +634,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
 #: samples with at least this many cells get the "working..." overlay while redrawing
 _SLOW_REDRAW_CELLS = 200_000
+#: how many of a clicked cell's most expressed genes are put in the (empty) Gene channels
+CLICK_GENES = 3
 #: how many of the most expressed genes in view the header lists
 N_TOP_GENES = 4
 #: the header's most-expressed genes are averaged over at most this many cells in view
