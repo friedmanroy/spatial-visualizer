@@ -1,7 +1,8 @@
 """Rudimentary marker-based cell typing of clusters (e.g. Leiden), using decoupler with
 PanglaoDB's cell-type marker genes.
 
-Each cluster is summarised by its cells' mean expression; every gene is then
+Each cluster is summarised by its cells' mean expression - or, for a clustering of
+hexagonal bins (sub-cellular spots), by its bins' mean - and every gene is then
 standardised across clusters, so a marker set scores high in a cluster where its genes
 are *relatively* high. decoupler's univariate linear model (ULM) scores each PanglaoDB
 cell type against each cluster, and the best-scoring type is suggested - or "Unknown"
@@ -10,7 +11,8 @@ when no type scores significantly.
 Each cell also gets a confidence (0-1) in its cluster's suggested type: the same ULM
 scores computed per cell, turned into shares with a softmax over all scored types -
 near 1 when the cell's markers clearly point to that type, low when another type's
-markers fit it as well or better. These are suggestions to check against known
+markers fit it as well or better. For a hexagon clustering this is scored per hexagon
+(single spots hold too few transcripts) and every spot gets its hexagon's confidence. These are suggestions to check against known
 markers, not a validated annotation.
 
 PanglaoDB is downloaded once (through OmniPath) and kept in cache/ for offline use.
@@ -28,7 +30,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from . import cache
+from . import cache, clustering
 
 ALL_TISSUES = "All tissues"
 #: cell types found in almost any tissue - offered alongside a chosen tissue's own types
@@ -193,6 +195,7 @@ class ClusterCall:
     candidates: list[tuple[str, float, int]] = field(default_factory=list)  # (type, score, markers measured)
     mean_confidence: float = float("nan")  # mean per-cell confidence in `label` (NaN if Unknown)
     drivers: list[tuple[str, float]] = field(default_factory=list)  # (gene, standardised level) behind `label`
+    n_bins: int | None = None  # hexagons in the cluster, for a hexagon clustering
 
 
 @dataclass
@@ -204,25 +207,32 @@ class CellTypingResult:
     tissue: str
     n_types_scored: int
     calls: list[ClusterCall]
+    hex_width: float | None = None  # bin width (cell spacings) when hexagons were typed
+    background: str = ""  # which background genes were left out (GeneFilter.describe)
 
 
-def _cluster_means(adata, codes: np.ndarray, n_clusters: int) -> np.ndarray:
+def _cluster_means(X, codes: np.ndarray, n_clusters: int) -> np.ndarray:
+    """Mean row of X (cells or hexagons x genes) per cluster code (-1 = none)."""
     valid = codes >= 0
-    cells = np.flatnonzero(valid)
+    rows = np.flatnonzero(valid)
     indicator = sp.csr_matrix(
-        (np.ones(len(cells)), (codes[valid], cells)), shape=(n_clusters, adata.n_obs),
+        (np.ones(len(rows)), (codes[valid], rows)), shape=(n_clusters, X.shape[0]),
     )
     sizes = np.asarray(indicator.sum(axis=1)).ravel()
-    mean = sp.diags(1.0 / np.maximum(sizes, 1)) @ indicator @ adata.X
+    mean = sp.diags(1.0 / np.maximum(sizes, 1)) @ indicator @ X
     return np.asarray(mean.todense()) if sp.issparse(mean) else np.asarray(mean)
 
 
 def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str,
-                      tissue: str, report=lambda text: None) -> CellTypingResult:
+                      tissue: str, report=lambda text: None,
+                      gene_filter: clustering.GeneFilter | None = None) -> CellTypingResult:
     """Suggests a cell type per cluster of obs[`cluster_col`] from the (cell type, gene)
     pairs in `net` (see marker_table / net_from_table), stores each cell's suggestion as
-    obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. `tissue` is only
-    a label for the results."""
+    obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. A clustering of
+    hexagonal bins (dataset.hex_clusterings) is typed on those bins, not on single
+    cells / spots. Marker genes `gene_filter` counts as background are left out.
+    `tissue` is only a label for the results."""
+    import anndata as ad
     import decoupler as dc
 
     adata = dataset.adata
@@ -236,6 +246,27 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     net = net.copy()
     net["target"] = [dataset.match_gene(g) for g in net["target"]]
     net = net.dropna(subset=["target"]).drop_duplicates()
+    genes = sorted(set(net["target"]))
+    X = adata.X[:, [adata.var_names.get_loc(g) for g in genes]] if genes else None
+
+    # What gets scored: hexagons for a hexagon clustering, else the cells themselves.
+    width = dataset.hex_clusterings.get(cluster_col)
+    binnings = None
+    if X is None:
+        units, unit_codes = None, codes
+    elif width is not None:
+        report(f"Averaging the marker genes within hexagonal bins ({width:g} cell spacings wide)")
+        units, binnings = clustering.hex_profiles(dataset, width, X)
+        unit_codes = clustering.cells_to_bins(codes, binnings)
+    else:
+        units, unit_codes = ad.AnnData(X), codes
+    if units is not None:
+        units.var_names = genes
+        background = clustering.background_genes(units, gene_filter)
+        if background.any():
+            units = units[:, ~background].copy()
+            genes = list(units.var_names)
+            net = net[net["target"].isin(genes)]
     measured = net.groupby("source").size()
     net = net[net["source"].isin(measured[measured >= MIN_MARKERS].index)]
     if net.empty:
@@ -244,17 +275,20 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
             "genes measured in this data - try 'All tissues', check the marker sets on the "
             "Cell types tab, or the gene panel may be too small for marker-based typing."
         )
+    keep = units.var_names.isin(set(net["target"]))
+    units = units[:, keep].copy()
+    genes = list(units.var_names)
 
-    genes = sorted(set(net["target"]))
+    unit_word = "hexagons" if width is not None else "cells"
     report(f"Scoring {net['source'].nunique()} cell types in each of the {len(names)} clusters")
-    gene_idx = [adata.var_names.get_loc(g) for g in genes]
-    means = pd.DataFrame(_cluster_means(adata[:, gene_idx], codes, len(names)), index=names, columns=genes)
+    means = pd.DataFrame(_cluster_means(units.X, unit_codes, len(names)), index=names, columns=genes)
     spread = means.std(axis=0)
     means = means.loc[:, spread > 0]
     scaled = (means - means.mean(axis=0)) / spread[means.columns]
     scores, pvalues = dc.mt.ulm(data=scaled, net=net, tmin=MIN_MARKERS)
 
     sizes = np.bincount(codes[codes >= 0], minlength=len(names))
+    n_bins = np.bincount(unit_codes[unit_codes >= 0], minlength=len(names)) if width is not None else None
     calls = []
     for i, name in enumerate(names):
         ranked = scores.loc[name].sort_values(ascending=False)
@@ -269,7 +303,7 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
         calls.append(ClusterCall(
             cluster=name, n_cells=int(sizes[i]), label=label,
             candidates=[(t, float(ranked[t]), int(measured[t])) for t in ranked.index[:N_CANDIDATES]],
-            drivers=drivers,
+            drivers=drivers, n_bins=None if n_bins is None else int(n_bins[i]),
         ))
 
     column = f"{cluster_col}_celltype"
@@ -278,25 +312,31 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     present = sorted({c.label for c in calls} - {UNKNOWN}) + ([UNKNOWN] if UNKNOWN in label_of.values() else [])
     adata.obs[column] = pd.Categorical(cell_labels, categories=present)
 
-    report(f"Scoring each cell's confidence in its type ({adata.n_obs:,} cells)")
-    confidence = _cell_confidence(dc, adata, genes, net, cell_labels)
+    report(f"Scoring each {unit_word[:-1]}'s confidence in its type ({units.n_obs:,} {unit_word})")
+    unit_labels = np.array([calls[c].label if c >= 0 else None for c in unit_codes], dtype=object)
+    unit_conf = _cell_confidence(dc, units, net, unit_labels)
+    confidence = (unit_conf if binnings is None
+                  else clustering.bins_to_cells(unit_conf, binnings, adata.n_obs, fill=np.nan))
     confidence_column = f"{column}_confidence"
     adata.obs[confidence_column] = confidence
     for i, call in enumerate(calls):
-        in_cluster = codes == i
+        in_cluster = unit_codes == i
         if call.label != UNKNOWN and in_cluster.any():
-            call.mean_confidence = float(np.nanmean(confidence[in_cluster]))
+            call.mean_confidence = float(np.nanmean(unit_conf[in_cluster]))
     return CellTypingResult(cluster_col, column, confidence_column, species, tissue,
-                            int(net["source"].nunique()), calls)
+                            int(net["source"].nunique()), calls, hex_width=width,
+                            background="" if gene_filter is None else gene_filter.describe())
 
 
-def _cell_confidence(dc, adata, genes: list[str], net: pd.DataFrame, cell_labels: np.ndarray) -> np.ndarray:
-    """Per cell: softmax share of its assigned type among all scored types' per-cell ULM
-    scores (NaN for cells without a type). Genes are divided by their spread across
-    cells (not centred, so sparse data stays sparse) so no gene dominates by scale."""
+def _cell_confidence(dc, units, net: pd.DataFrame, cell_labels: np.ndarray) -> np.ndarray:
+    """Per row of `units` (cells or hexagons x marker genes): softmax share of its
+    assigned type among all scored types' ULM scores (NaN for rows without a type).
+    Genes are divided by their spread across rows (not centred, so sparse data stays
+    sparse) so no gene dominates by scale."""
     import anndata as ad
 
-    X = adata[:, genes].X
+    genes = list(units.var_names)
+    X = units.X
     X = sp.csr_matrix(X, dtype=np.float32) if sp.issparse(X) else np.asarray(X, dtype=np.float32)
     mean = np.asarray(X.mean(axis=0)).ravel()
     mean_sq = np.asarray((X.multiply(X) if sp.issparse(X) else X * X).mean(axis=0)).ravel()
@@ -306,17 +346,21 @@ def _cell_confidence(dc, adata, genes: list[str], net: pd.DataFrame, cell_labels
     cells = ad.AnnData(sp.csr_matrix(X) if sp.issparse(X) else X)
     cells.var_names = genes
     # Batches keep memory bounded on million-cell data (each batch is densified).
-    dc.mt.ulm(data=cells, net=net, tmin=MIN_MARKERS, bsize=50_000)
-    scores = cells.obsm["score_ulm"]
+    cells.obs_names = [str(i) for i in range(cells.n_obs)]
+    # Rows without any marker expression are dropped and a repaired copy returned;
+    # they get no confidence (NaN) rather than an even split across types.
+    repaired = dc.mt.ulm(data=cells, net=net, tmin=MIN_MARKERS, bsize=50_000)
+    scores = (cells if repaired is None else repaired).obsm["score_ulm"].reindex(cells.obs_names)
+    scored = scores.notna().any(axis=1).to_numpy()
     S = np.nan_to_num(scores.to_numpy(dtype=np.float64))
     S -= S.max(axis=1, keepdims=True)
     share = np.exp(S)
     share /= share.sum(axis=1, keepdims=True)
 
     type_index = {t: j for j, t in enumerate(scores.columns)}
-    confidence = np.full(adata.n_obs, np.nan, dtype=np.float32)
+    confidence = np.full(units.n_obs, np.nan, dtype=np.float32)
     for label in set(cell_labels) - {None, UNKNOWN}:
         if label in type_index:
-            rows = np.flatnonzero(cell_labels == label)
+            rows = np.flatnonzero((cell_labels == label) & scored)
             confidence[rows] = share[rows, type_index[label]]
     return confidence

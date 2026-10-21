@@ -323,6 +323,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             detail["top_genes"] = []
             return
         means = np.asarray(dataset.adata.X[idx[local]].mean(axis=0)).ravel()
+        means[dataset.background_mask()] = -np.inf
         top = np.argsort(means)[::-1][:N_TOP_GENES]
         detail["top_genes"] = [str(dataset.adata.var_names[i]) for i in top]
 
@@ -438,9 +439,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     controls.refresh_for_dataset()
     state.pathway_listeners.append(controls.refresh_pathway_options)
+    dataset.gene_filter = state.gene_filter.value
     update_markers(lattice0)
     update_top_genes(None)
     recolor_only()
+
+    def on_gene_filter(gene_filter):
+        # Background genes also drop out of the "most expressed" genes shown.
+        dataset.gene_filter = gene_filter
+        with pn.io.hold():
+            update_top_genes(view_box())
+            recolor_only()
+
+    state.gene_filter.listeners.append(on_gene_filter)
 
     # Re-run Leiden at another resolution without going back to the landing page; each
     # resolution gets its own obs column, so earlier clusterings stay available.
@@ -450,36 +461,58 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     leiden_btn = pn.widgets.Button(name="Run Leiden", button_type="primary", width=110, margin=(23, 5, 5, 5))
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
-    # With hex binning on, the bins shown are what gets clustered (each by its cells'
-    # mean expression) - far faster than clustering a million+ individual cells.
+    # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
+    # cell-type one by one, so by default hexagonal bins are clustered (each by its
+    # spots' mean expression) and typed, and every spot gets its bin's result.
+    leiden_unit = pn.widgets.RadioButtonGroup(
+        options=[clustering.HEXAGONS, clustering.CELLS], value=clustering.HEXAGONS,
+        button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
+    )
+    leiden_width = pn.widgets.FloatInput(
+        # The width the landing page clustered with, if it did; else the display's.
+        name="Hexagon width (in cell spacings)",
+        value=list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings else bin_width.value,
+        start=1.0, end=100.0, step=0.5,
+        sizing_mode="stretch_width",
+        description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
+    )
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
 
     def update_leiden_target(*events):
+        hexes = leiden_unit.value == clustering.HEXAGONS
+        leiden_width.visible = hexes
+        same = bin_toggle.value and leiden_width.value == bin_width.value
         leiden_target.object = (
-            f"Clusters the hexagonal bins shown (width {bin_width.value:g} cell spacings), "
-            "then gives each cell its bin's cluster. "
-            if bin_toggle.value else "Clusters individual cells. "
+            f"Clusters and cell-types hexagons {leiden_width.value:g} cell spacings wide "
+            + ("(the ones shown) " if same else "")
+            + "by their mean expression, then gives each spot / cell its hexagon's result - "
+            "for sub-cellular data such as Xenium or Open-ST. "
+            if hexes else "Clusters and cell-types individual cells - for segmented single-cell data. "
         ) + "The result is added as a new field to color by."
 
     update_leiden_target()
-    bin_toggle.param.watch(update_leiden_target, "value")
-    bin_width.param.watch(update_leiden_target, "value")
+    for w in (leiden_unit, leiden_width, bin_toggle, bin_width):
+        w.param.watch(update_leiden_target, "value")
 
     async def on_run_leiden(event):
         leiden_status.object = ""
-        detail = (f"on hexagonal bins {bin_width.value:g} cell spacings wide" if bin_toggle.value
-                  else f"on all {dataset.adata.n_obs:,} cells") + f", resolution {leiden_resolution.value:g}"
+        hexes = leiden_unit.value == clustering.HEXAGONS
+        gene_filter = state.gene_filter.value
+        detail = (f"on hexagons {leiden_width.value:g} cell spacings wide" if hexes
+                  else f"on all {dataset.adata.n_obs:,} cells") + (
+            f", resolution {leiden_resolution.value:g}, {gene_filter.describe()}")
         try:
             async with state.busy.show("Running Leiden clustering...", detail):
-                if bin_toggle.value:
+                if hexes:
                     col, n_bins = await asyncio.to_thread(
-                        clustering.run_leiden_on_hexbins, dataset, bin_width.value, leiden_resolution.value,
-                        report=state.busy.step,
+                        clustering.run_leiden_on_hexbins, dataset, leiden_width.value, leiden_resolution.value,
+                        report=state.busy.step, gene_filter=gene_filter,
                     )
-                    clustered = f"{n_bins:,} hex bins"
+                    clustered = f"{n_bins:,} hexagons"
                 else:
                     col = await asyncio.to_thread(
-                        clustering.run_leiden, dataset.adata, leiden_resolution.value, report=state.busy.step,
+                        clustering.run_leiden, dataset, leiden_resolution.value, report=state.busy.step,
+                        gene_filter=gene_filter,
                     )
                     clustered = f"{dataset.adata.n_obs:,} cells"
                 await state.busy.step_now("Coloring the plot by the new clusters")
@@ -489,7 +522,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             leiden_status.object = f"**Leiden clustering failed:** {exc}"
             return
         leiden_status.object = (
-            f"Added **{col}** ({dataset.adata.obs[col].nunique()} clusters, from {clustered})."
+            f"Added **{col}** ({dataset.adata.obs[col].nunique()} clusters, from {clustered}, "
+            f"{gene_filter.describe()})."
         )
         if typing.enabled.value:
             await run_cell_typing(col)
@@ -503,7 +537,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     async def run_cell_typing(cluster_col: str):
         try:
-            result = await typing.annotate(dataset, cluster_col)
+            result = await typing.annotate(dataset, cluster_col, state.gene_filter.value)
             async with state.busy.show("Coloring by the suggested cell types..."):
                 await state.busy.step_now("Adding the cell-type and confidence fields")
                 add_and_announce_field(result.confidence_column, select=False)
@@ -532,7 +566,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     rerun_btn = pn.widgets.Button(name="Re-run cell typing", width=150, margin=(23, 5, 5, 5))
     rerun_hint = pn.pane.HTML(
         "Re-run cell typing on an existing clustering, e.g. after editing marker sets on the "
-        "<b>Cell types</b> tab - no need to re-run Leiden.",
+        "<b>Cell types</b> tab - no need to re-run Leiden. A hexagon clustering is typed on "
+        "its own hexagons.",
         styles=_HINT_STYLE, sizing_mode="stretch_width", margin=(8, 5, 0, 5),
     )
     rerun_row = pn.Column(rerun_hint, pn.Row(rerun_select, rerun_btn, sizing_mode="stretch_width"),
@@ -555,7 +590,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
-        leiden_target, typing.layout, pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
+        leiden_unit, leiden_width, leiden_target, state.gene_filter.layout, typing.layout,
+        pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
         leiden_status, rerun_row, typing_results,
         title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )

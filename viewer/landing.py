@@ -14,6 +14,8 @@ import scanpy as sc
 from . import clustering, hexbin
 from . import pathways as pathways_mod
 from .cache import ColorCache
+from .clustering import CELLS, HEXAGONS
+from .color_controls import HINT_STYLE
 from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
 
@@ -53,11 +55,33 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         value=clustering.DEFAULT_LEIDEN_RESOLUTION, start=0.05, end=10, step=0.1,
         width=260, visible=False,
     )
+    # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
+    # type one by one, so by default the hexagonal bins are clustered (and typed).
+    leiden_unit = pn.widgets.RadioButtonGroup(
+        name="Cluster", options=[HEXAGONS, CELLS], value=HEXAGONS, button_type="primary",
+        button_style="outline", visible=False,
+    )
+    leiden_unit_hint = pn.pane.HTML(
+        "<b>Hexagons</b>: averages the spots / cells in hexagonal bins (the same bins the "
+        "Spatial tab draws for huge samples), clusters and cell-types those, and gives each "
+        "spot its hexagon's result - use this for sub-cellular data such as Xenium or Open-ST. "
+        "<b>Individual cells</b>: for segmented single-cell data.",
+        styles=HINT_STYLE, width=420, visible=False,
+    )
+    leiden_width = pn.widgets.FloatInput(
+        name="Hexagon width (in cell spacings; empty = automatic)", value=None,
+        placeholder=f"automatic (about {hexbin.TARGET_BINS:,} hexagons per sample)",
+        start=1.0, end=100.0, step=0.5, width=340, visible=False,
+        description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
+    )
+    leiden_unit.param.watch(lambda e: setattr(leiden_width, "visible", e.new == HEXAGONS), "value")
     typing = state.celltyping
-    typing_box = pn.Column(typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
+    typing_box = pn.Column(state.gene_filter.layout, typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
 
     async def on_leiden_toggle(event):
         leiden_resolution.visible = typing_box.visible = event.new
+        leiden_unit.visible = leiden_unit_hint.visible = event.new
+        leiden_width.visible = event.new and leiden_unit.value == HEXAGONS
         if event.new and typing.enabled.value:
             try:  # fetch PanglaoDB now (first time only) so the tissue list is filled in
                 await typing.ensure_markers()
@@ -69,7 +93,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
     open_status = pn.pane.Markdown("")
     step2 = pn.Column(
-        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_resolution, typing_box,
+        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_unit, leiden_unit_hint,
+        leiden_width, leiden_resolution, typing_box,
         open_btn, open_status, visible=False,
     )
 
@@ -114,6 +139,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
             typing.guess_species(adata.var_names)
+            state.gene_filter.set_genes(adata.var_names)
             remember_folder_of(path)
             holder["dataset"] = ds
 
@@ -163,19 +189,24 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         if leiden_checkbox.value:
             open_status.object = ""
             largest = ds.largest_sample_size()
-            # Huge samples open hex-binned in the viewer, so cluster those same bins.
-            on_hexbins = largest > hexbin.BINNING_THRESHOLD
-            detail = ("on hexagonal bins of the " if on_hexbins else "on all ") + f"{ds.adata.n_obs:,} cells"
+            # The automatic width is the one the Spatial tab draws huge samples with.
+            on_hexbins = leiden_unit.value == HEXAGONS
+            width = leiden_width.value or hexbin.default_width_factor(largest)
+            gene_filter = state.gene_filter.value
+            detail = ((f"on hexagons {width:g} cell spacings wide over the " if on_hexbins else "on all ")
+                      + f"{ds.adata.n_obs:,} cells, "
+                      + gene_filter.describe())
             try:
                 async with busy.show("Running Leiden clustering...", detail):
                     if on_hexbins:
                         col, _ = await asyncio.to_thread(
-                            clustering.run_leiden_on_hexbins, ds, hexbin.default_width_factor(largest),
-                            leiden_resolution.value, report=busy.step,
+                            clustering.run_leiden_on_hexbins, ds, width,
+                            leiden_resolution.value, report=busy.step, gene_filter=gene_filter,
                         )
                     else:
                         col = await asyncio.to_thread(
-                            clustering.run_leiden, ds.adata, leiden_resolution.value, report=busy.step,
+                            clustering.run_leiden, ds, leiden_resolution.value, report=busy.step,
+                            gene_filter=gene_filter,
                         )
             except Exception as exc:
                 traceback.print_exc(file=sys.stderr)
@@ -185,7 +216,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
             if typing.enabled.value:
                 try:
-                    result = await typing.annotate(ds, col)
+                    result = await typing.annotate(ds, col, gene_filter)
                     new_fields += [result.column, result.confidence_column]
                 except Exception as exc:  # the clustering itself still worked - carry on
                     traceback.print_exc(file=sys.stderr)

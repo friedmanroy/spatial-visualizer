@@ -30,11 +30,18 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
   (with the confidence for suggested cell types), or its values for the genes / pathways shown.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
-  using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). With hex binning on,
-  the bins are clustered (much faster), and every cell gets its bin's cluster.
+  using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
+  clusters **hexagons** (each one's mean expression; width adjustable) and every spot gets its
+  hexagon's cluster - the way to cluster sub-cellular spots (Xenium transcripts, Open-ST,
+  Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
+  single-cell data.
+- **Background genes** - mitochondrial (`MT-`), ribosomal-protein (`RPS`/`RPL`) and genes
+  detected in almost every cell / hexagon can be left out of clustering, PCA/UMAP, cell typing
+  and the "most expressed genes" shown (mitochondrial genes are left out by default).
 - **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
   PanglaoDB marker genes, scored with [decoupler](https://decoupler.readthedocs.io) (ULM on
-  the clusters' standardised mean expression). The species (human or mouse) is preset from the gene names (and can be changed); pick the
+  the clusters' standardised mean expression). A hexagon clustering is typed on its hexagons,
+  and each spot's confidence is its hexagon's. The species (human or mouse) is preset from the gene names (and can be changed); pick the
   tissue to keep off-tissue types out; a table shows each cluster's suggestion, score and
   runners-up. A rough first guess to check against known markers - not a validated
   annotation. PanglaoDB is downloaded once (needs internet) and then kept in `cache/`.
@@ -53,7 +60,8 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   and saved to `cache/custom_pathways.json` so it's loaded automatically next time (the
   default `pathways.json` is left untouched).
 - **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
-  from the spatial data itself, with configurable number of PCs and neighbors. Uses scanpy's
+  from the spatial data itself - by default on its hexagons (one point per hexagon, colored by
+  its most common category), or on individual cells - with configurable number of PCs and neighbors. Uses scanpy's
   own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
 - **Persistent choices** - custom category colors, which fields are enabled, and the
   sample/FOV column are cached to
@@ -181,7 +189,8 @@ viewer/
   histogram.py               gene/pathway score distribution histograms
   pathways.py                pathways.json + custom pathway loading, score_genes scoring
   clustering.py              normalization check, PCA/neighbors, Leiden (per cell or per hex bin)
-  hexbin.py                  hexagonal binning of very large samples
+  hexbin.py                  hexagonal binning (huge samples, sub-cellular spots)
+  gene_filter_controls.py    "leave out background genes" widgets
   celltyping.py              PanglaoDB + decoupler cell-type suggestions for clusters
   celltype_controls.py       species / tissue widgets and the suggestions table
   markers_page.py            "Cell types" tab: edit / add marker gene sets

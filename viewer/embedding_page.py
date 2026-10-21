@@ -1,6 +1,11 @@
 """The 'scRNA / snRNA' tab: load a companion dataset, or compute PCA/UMAP on demand
 from the spatial data, and browse up to the first 10 PCs (or the 3 UMAP components) on either axis.
 
+From the spatial data, PCA/UMAP run by default on hexagonal bins (each one's mean
+expression) rather than single spots, which are too sparse when they're sub-cellular
+(Xenium transcripts, Open-ST...): one point per hexagon, colored by the spatial data's
+fields as each hexagon's most common category (or mean value).
+
 PCA/UMAP are always computed with scanpy's own tools (`sc.pp.pca`, `sc.pp.neighbors`,
 `sc.tl.umap`); the number of PCs and neighbors are user-configurable and trigger a
 fresh computation on request rather than being fixed constants.
@@ -13,13 +18,14 @@ import sys
 import traceback
 
 import numpy as np
+import pandas as pd
 import panel as pn
 import scanpy as sc
 from bokeh.models import ColumnDataSource
 from bokeh.plotting import figure
 
-from . import clustering, hover, spatial_plot
-from .color_controls import ColorControls, section_label
+from . import clustering, hexbin, hover, spatial_plot
+from .color_controls import HINT_STYLE, ColorControls, section_label
 from .colors import GRAY_RGBA
 from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
@@ -41,14 +47,52 @@ def _has_embedding(adata) -> bool:
     return have_pca and have_umap
 
 
-def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int, report=clustering._no_report):
-    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy. Always overwrites any existing
-    embedding, since this is called specifically when the user (re)requests a computation."""
+def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int, report=clustering._no_report,
+                       gene_filter: clustering.GeneFilter | None = None):
+    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy, leaving out the background genes
+    `gene_filter` names. Always overwrites any existing embedding, since this is called
+    specifically when the user (re)requests a computation."""
     adata = dataset.adata
-    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors, report)
+    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors, report, gene_filter)
     report(f"Computing UMAP ({UMAP_COMPONENTS} components - the first one in a session also compiles, ~20 s extra)")
     sc.tl.umap(tmp, n_components=UMAP_COMPONENTS)
     adata.obsm["X_umap"] = tmp.obsm["X_umap"]
+
+
+def _copy_field(hexes: Dataset, col: str):
+    """Adds the spatial field `col` to a hexagon dataset: each hexagon's most common
+    category (same colors as on the Spatial tab), or its cells' mean value."""
+    spatial, binnings = hexes.hex_source
+    spec = spatial.classify(col)
+    if spec.kind == "categorical":
+        codes = clustering.cells_to_bins(spec.codes, binnings)
+        labels = np.array(list(spec.categories) + [None], dtype=object)[codes]  # -1 -> None
+        hexes.adata.obs[col] = pd.Categorical(labels, categories=spec.categories)
+    elif spec.kind == "binned_continuous":
+        values = pd.to_numeric(spatial.adata.obs[col], errors="coerce").to_numpy(dtype=float)
+        hexes.adata.obs[col] = np.concatenate([
+            binning.mean(values[idx], np.isfinite(values[idx])) for idx, binning in binnings
+        ])
+    else:
+        return
+    hexes.add_field(col)
+    if spec.kind == "categorical":
+        hexes.classify(col).colors.update(spec.colors)
+
+
+def _hexagon_dataset(spatial: Dataset, width_factor: float, report=clustering._no_report) -> Dataset:
+    """A Dataset with one row per hexagonal bin of the spatial data (its cells' mean
+    expression), carrying the spatial data's coloring fields over to the hexagons."""
+    report(f"Averaging expression within hexagons {width_factor:g} cell spacings wide")
+    bins, binnings = clustering.hex_profiles(spatial, width_factor)
+    hexes = Dataset(bins, name=f"{spatial.name} (hexagons {width_factor:g} wide)")
+    hexes.hex_source = (spatial, binnings)
+    hexes.color_cache = spatial.color_cache
+    hexes.allowed_fields = {"sample"} if len(spatial.sample_ids) > 1 else set()
+    report(f"Giving the {bins.n_obs:,} hexagons the spatial data's fields")
+    for col in spatial.field_options():
+        _copy_field(hexes, col)
+    return hexes
 
 
 def build_embedding_page(state) -> pn.viewable.Viewable:
@@ -63,6 +107,28 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     compute_btn = pn.widgets.Button(
         name="Compute PCA/UMAP from spatial data instead", button_type="default"
     )
+    # Sub-cellular spots are too sparse to embed one by one: by default the spatial
+    # data's hexagonal bins are embedded instead (one point per hexagon).
+    compute_unit = pn.widgets.RadioButtonGroup(
+        options=[clustering.HEXAGONS, clustering.CELLS], value=clustering.HEXAGONS,
+        button_type="primary", button_style="outline", sizing_mode="stretch_width",
+    )
+    # The width the spatial data was last clustered with, if on hexagons; else automatic.
+    spatial = state.spatial
+    largest = spatial.largest_sample_size() if spatial is not None else 0
+    used = list(spatial.hex_clusterings.values()) if spatial is not None else []
+    hex_width = pn.widgets.FloatInput(
+        name="Hexagon width (in cell spacings)", value=used[-1] if used else hexbin.default_width_factor(largest),
+        start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width",
+        description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
+    )
+    compute_hint = pn.pane.HTML(
+        "<b>Hexagons</b>: one point per hexagonal bin of the spatial data (its spots' mean "
+        "expression) - for sub-cellular data such as Xenium or Open-ST, and much faster on "
+        "huge samples. <b>Individual cells</b>: one point per cell.",
+        styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5),
+    )
+    compute_unit.param.watch(lambda e: setattr(hex_width, "visible", e.new == clustering.HEXAGONS), "value")
     recompute_btn = pn.widgets.Button(
         name="Recompute with these settings", button_type="default", visible=False
     )
@@ -132,10 +198,11 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         return colors
 
     def _update_count(colors, n):
-        header = f"{n:,} cells · {embedding_kind.value} · {controls.coloring_summary_html()}"
+        unit = "hexagons" if state.embedding.hex_source is not None else "cells"
+        header = f"{n:,} {unit} · {embedding_kind.value} · {controls.coloring_summary_html()}"
         if controls.mode.value == "Field" and controls.field_select.value:
             n_shown = int(np.sum(colors != GRAY_RGBA))
-            header += f" · <b>{n_shown:,}</b> of {n:,} cells in the selected categories"
+            header += f" · <b>{n_shown:,}</b> of {n:,} {unit} in the selected categories"
         plot_header.object = header
 
     def redraw_full(*events):
@@ -175,18 +242,35 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     state.pathway_listeners.append(controls.refresh_pathway_options)
 
     def on_field_added(ds: Dataset, field: str):
-        # Only relevant when this tab is showing the spatial data's own embedding.
-        if ds is state.embedding:
+        # Only relevant when this tab is showing the spatial data's own embedding, or
+        # its hexagons (which then get the new field too).
+        emb = state.embedding
+        if emb is not None and emb.hex_source is not None and emb.hex_source[0] is ds:
+            _copy_field(emb, field)
+            controls.refresh_field_options(field)
+        elif ds is emb:
             controls.refresh_field_options(field)
 
     state.field_listeners.append(on_field_added)
 
-    def _embedding_detail(n_cells: int) -> str:
-        return (f"{n_pcs_input.value} PCs, {n_neighbors_input.value} neighbors, {n_cells:,} cells - "
-                "this can take several minutes for large datasets")
+    def on_gene_filter(gene_filter):
+        if state.embedding is not None:  # the hover's most expressed genes
+            state.embedding.gene_filter = gene_filter
+            recolor_only()
+
+    state.gene_filter.listeners.append(on_gene_filter)
+
+    def _embedding_detail(n: int, unit: str = "cells") -> str:
+        return (f"{n_pcs_input.value} PCs, {n_neighbors_input.value} neighbors, {n:,} {unit}, "
+                f"{state.gene_filter.value.describe()} - this can take several minutes for large datasets")
+
+    # Whether the active embedding was computed from the spatial data (so "Recompute"
+    # rebuilds it from there, with the current hexagon / cell choice).
+    from_spatial = {"value": False}
 
     def activate_dataset(ds: Dataset, label: str):
         state.embedding = ds
+        ds.gene_filter = state.gene_filter.value
         with pn.io.hold():
             controls.refresh_for_dataset()
             view_controls.visible = True
@@ -195,7 +279,8 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             source_card.collapsed = True  # done loading - make room for the coloring
             refresh_axis_options()
             redraw_full()
-        status.object = f"**Active embedding source:** {label} ({ds.adata.n_obs:,} cells)"
+        unit = "hexagons" if ds.hex_source is not None else "cells"
+        status.object = f"**Active embedding source:** {label} ({ds.adata.n_obs:,} {unit})"
 
     async def on_load(event):
         path = path_input.value.strip()
@@ -215,7 +300,9 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
                 ds = Dataset(adata, name=os.path.basename(path))
                 remember_folder_of(path)
                 if not _has_embedding(adata):
-                    await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
+                    await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value,
+                                            busy.step, state.gene_filter.value)
+                from_spatial["value"] = False
                 activate_dataset(ds, os.path.basename(path))
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
@@ -225,12 +312,18 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         if state.spatial is None:
             status.object = "No spatial dataset loaded."
             return
-        ds = state.spatial
+        spatial = state.spatial
+        hexes = compute_unit.value == clustering.HEXAGONS
+        detail = (f"hexagons {hex_width.value:g} cell spacings wide over {spatial.adata.n_obs:,} cells"
+                  if hexes else _embedding_detail(spatial.adata.n_obs))
         try:
-            async with busy.show("Computing PCA and UMAP from the spatial data...",
-                                 _embedding_detail(ds.adata.n_obs)):
-                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
-                activate_dataset(ds, f"{ds.name} (computed from spatial data)")
+            async with busy.show("Computing PCA and UMAP from the spatial data...", detail):
+                ds = (await asyncio.to_thread(_hexagon_dataset, spatial, hex_width.value, busy.step)
+                      if hexes else spatial)
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value,
+                                        busy.step, state.gene_filter.value)
+                from_spatial["value"] = True
+                activate_dataset(ds, f"{ds.name} (computed from spatial data, {state.gene_filter.value.describe()})")
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to compute embedding:** {exc}"
@@ -239,9 +332,13 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         ds = state.embedding
         if ds is None:
             return
+        if from_spatial["value"]:
+            await on_compute_from_spatial(event)
+            return
         try:
             async with busy.show("Recomputing PCA and UMAP...", _embedding_detail(ds.adata.n_obs)):
-                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value, busy.step)
+                await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value,
+                                        busy.step, state.gene_filter.value)
                 with pn.io.hold():
                     refresh_axis_options()
                     redraw_full()
@@ -265,6 +362,9 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         pn.layout.Divider(),
         "**PCA / UMAP settings**",
         pn.Row(n_pcs_input, n_neighbors_input),
+        state.gene_filter.layout,
+        "From the spatial data, embed:",
+        compute_unit, compute_hint, hex_width,
         compute_btn,
         recompute_btn,
         title="Data source & PCA / UMAP", collapsed=False, sizing_mode="stretch_width", margin=(4, 5),

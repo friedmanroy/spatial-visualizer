@@ -8,6 +8,7 @@ from .embedding_page import build_embedding_page
 from .busy_overlay import BusyOverlay
 from .celltype_controls import CellTypingControls
 from .error_dialog import build_error_dialog
+from .gene_filter_controls import GeneFilterControls
 from .landing import build_landing
 from .markers_page import build_markers_page
 from .pathways_page import build_pathways_page
@@ -20,6 +21,7 @@ def build() -> pn.viewable.Viewable:
     state = AppState()
     state.busy = BusyOverlay()
     state.celltyping = CellTypingControls(state.busy)
+    state.gene_filter = GeneFilterControls()
     root = pn.Column(sizing_mode="stretch_both")
 
     def show_viewer():

@@ -9,6 +9,7 @@ import numpy as np
 import scanpy as sc
 import scipy.sparse as sp
 
+from . import clustering
 from . import fields as fields_mod
 from . import hexbin
 from . import spatial_plot
@@ -74,9 +75,18 @@ class Dataset:
         self._var_upper_lookup: dict[str, str] | None = None
         self._top_variable_genes: dict[int, list[str]] = {}
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
+        # Background genes (clustering.GeneFilter) left out of the "most expressed" genes.
+        self.gene_filter = None
+        self._background_masks: dict = {}
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
         # obs column -> celltyping.CellTypingResult, for showing per-cluster suggestions.
         self.celltype_results: dict = {}
+        # obs column -> bin width (cell spacings) of clusterings made on hexagonal bins,
+        # so cell typing can score those same bins rather than single cells / spots.
+        self.hex_clusterings: dict[str, float] = {}
+        # For a dataset of hexagon profiles made from another one (the scRNA tab's
+        # hexagon PCA/UMAP): (that Dataset, [(cell indices, HexBinning)] per sample).
+        self.hex_source: tuple | None = None
         # None means "no restriction, offer every eligible field"; otherwise only
         # these column names are offered as "color by" options (set on the landing
         # page so irrelevant obs columns don't clutter the field picker).
@@ -186,14 +196,25 @@ class Dataset:
         return self._gene_cache[matched]
 
 
+    def background_mask(self) -> np.ndarray:
+        """Boolean mask over var_names of the background genes self.gene_filter leaves
+        out (detection rates measured over all cells)."""
+        if self.gene_filter not in self._background_masks:
+            self._background_masks[self.gene_filter] = clustering.background_genes(self.adata, self.gene_filter)
+        return self._background_masks[self.gene_filter]
+
     def top_genes(self, rows: np.ndarray | None = None, binning=None, k: int = 5) -> np.ndarray:
         """(n, k) var indices of the k most expressed genes of each cell in `rows` (all
         cells if None) - or, given the binning of those cells, of each bin (its cells'
-        mean). -1 where fewer than k genes are expressed. Recent results are cached, so
-        recoloring doesn't recompute them."""
-        key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning))
+        mean) - leaving out background genes. -1 where fewer than k genes are expressed.
+        Recent results are cached, so recoloring doesn't recompute them."""
+        key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning),
+               self.gene_filter)
         if key not in self._top_genes_cache:
             X = self.adata.X if rows is None else self.adata.X[rows]
+            background = self.background_mask()
+            if background.any():  # zero those genes' columns
+                X = X @ sp.diags((~background).astype(np.float32))
             if binning is not None:
                 X = binning.mean_matrix @ X
             if len(self._top_genes_cache) >= _TOP_GENES_CACHE_SIZE:
@@ -218,6 +239,9 @@ class AppState:
         # Cell-typing settings (celltype_controls.CellTypingControls), shared by the
         # landing page and the Spatial tab so choices carry over.
         self.celltyping = None
+        # Background genes left out of PCA / UMAP / Leiden and cell typing
+        # (gene_filter_controls.GeneFilterControls), shared like the cell-typing settings.
+        self.gene_filter = None
         # Called with each new celltyping.CellTypingResult (e.g. to refresh the Cell types tab).
         self.celltype_listeners: list = []
         # async (cluster_col) -> None: cell-types a clustering of the spatial data and

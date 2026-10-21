@@ -105,8 +105,9 @@ class CellTypingControls:
                                   "first time only - afterwards they're kept in cache/"):
             self._set_markers(await asyncio.to_thread(celltyping.load_markers))
 
-    async def annotate(self, dataset, cluster_col: str) -> celltyping.CellTypingResult:
-        """Runs cell typing on `cluster_col` (overlay up meanwhile) and remembers the
+    async def annotate(self, dataset, cluster_col: str, gene_filter=None) -> celltyping.CellTypingResult:
+        """Runs cell typing on `cluster_col` (overlay up meanwhile), leaving out the
+        background genes `gene_filter` (clustering.GeneFilter) names, and remembers the
         result on the dataset, so the Spatial tab can show it."""
         await self.ensure_markers()
         if self._detected is None:  # not preset by a file load: detect from this dataset now
@@ -116,7 +117,7 @@ class CellTypingControls:
         async with self.busy.show("Suggesting cell types...", self.settings_label):
             result = await asyncio.to_thread(
                 celltyping.annotate_clusters, dataset, cluster_col, net,
-                species, self.settings_label, report=self.busy.step,
+                species, self.settings_label, report=self.busy.step, gene_filter=gene_filter,
             )
         dataset.celltype_results[result.column] = result
         return result
@@ -124,6 +125,9 @@ class CellTypingControls:
 
 def results_html(result: celltyping.CellTypingResult) -> str:
     """Per-cluster table: suggested type, its score, and the runners-up."""
+    hexes = result.hex_width is not None
+    unit = "hexagon" if hexes else "cell"
+    hovered = "spot - each gets its hexagon's" if hexes else "cell"
     rows = []
     for call in sorted(result.calls, key=lambda c: -c.n_cells):
         best = call.candidates[0] if call.candidates else None
@@ -141,6 +145,7 @@ def results_html(result: celltyping.CellTypingResult) -> str:
         conf_text = "" if conf != conf else f"{conf:.0%}"  # NaN (Unknown) -> blank
         rows.append(
             f"<tr><td>{html.escape(call.cluster)}</td><td style='text-align:right'>{call.n_cells:,}</td>"
+            + (f"<td style='text-align:right'>{call.n_bins:,}</td>" if hexes else "") +
             f"<td><b>{label}</b> <span style='color:#666'>{score}</span>"
             f"<div style='color:#777;font-size:11px'>{others}</div></td>"
             f"<td style='text-align:right'>{conf_text}</td></tr>"
@@ -148,14 +153,18 @@ def results_html(result: celltyping.CellTypingResult) -> str:
     return (
         f"<div style='font-size:12px;margin-bottom:4px'><b>Suggested cell types</b> "
         f"(<code>{html.escape(result.column)}</code>) - {html.escape(result.tissue)}, "
-        f"{result.n_types_scored} cell types scored. Score = how strongly the "
+        f"{result.n_types_scored} cell types scored"
+        + (f", typed on the clustering's hexagons ({result.hex_width:g} cell spacings wide)" if hexes else "")
+        + (f", {html.escape(result.background)}" if result.background and result.background != "all genes" else "")
+        + ". Score = how strongly the "
         f"type's markers stand out in that cluster; gray lines are its strongest markers there and the next-best types. "
-        f"Confidence = the cluster's mean per-cell confidence (also shown when hovering a "
-        f"cell, and as the field <code>{html.escape(result.confidence_column)}</code>).</div>"
+        f"Confidence = the cluster's mean per-{unit} confidence (also shown when hovering a "
+        f"{hovered}, and as the field <code>{html.escape(result.confidence_column)}</code>).</div>"
         "<div style='max-height:260px;overflow-y:auto'>"
         "<table style='font-size:12px;border-collapse:collapse;width:100%'>"
         "<tr style='text-align:left;border-bottom:1px solid #ddd'><th>Cluster</th>"
-        "<th style='text-align:right'>Cells</th><th style='padding-left:6px'>Suggested type</th>"
+        "<th style='text-align:right'>Cells</th>"
+        + ("<th style='text-align:right'>Hexagons</th>" if hexes else "") + "<th style='padding-left:6px'>Suggested type</th>"
         "<th style='text-align:right'>Confidence</th></tr>"
         + "".join(rows).replace("<td><b>", "<td style='padding-left:6px'><b>")
         + "</table></div>"
