@@ -29,7 +29,7 @@ HINT_STYLE = {"font-size": "12px", "color": "#555", "line-height": "1.35"}
 _GENE_HINT = (
     "Each channel colors cells by one gene: brighter = higher expression. "
     "Use up to three channels; overlapping expression mixes the colors. "
-    "On the Spatial tab, with no genes chosen, click a cell to show its 3 most expressed."
+    "On the Spatial tab, click a cell to show its 3 most expressed."
 )
 _PATHWAY_HINT = (
     "Each channel colors cells by a pathway score: its color where the pathway's genes "
@@ -410,10 +410,8 @@ class ColorControls:
     def _active_labels(self) -> set:
         return {cat for cat, cb in self._value_checkboxes.items() if cb.value}
 
-    def no_genes_chosen(self) -> bool:
-        """In the Gene view with every channel empty?"""
-        return (self.mode.value == "Gene & Pathway" and self.expr_mode.value == "Gene"
-                and not any(w["gene"].value.strip() for w in self.channel_widgets.values()))
+    def in_gene_view(self) -> bool:
+        return self.mode.value == "Gene & Pathway" and self.expr_mode.value == "Gene"
 
     def set_genes(self, genes: list[str]):
         """Puts `genes` in the red, green and blue channels (in that order), recoloring once."""

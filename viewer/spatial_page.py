@@ -10,7 +10,7 @@ import traceback
 import numpy as np
 import panel as pn
 from bokeh.events import RangesUpdate, Tap
-from bokeh.models import BooleanFilter, CDSView, ColumnDataSource
+from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
 from . import clustering, hexbin, hover, spatial_plot
 from .state import top_k_per_row
@@ -359,16 +359,20 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         top = top_k_per_row(np.asarray(profile).reshape(1, -1), k)[0]
         return [str(dataset.adata.var_names[g]) for g in top if g >= 0]
 
-    def on_tap(event):
-        """In the Gene view with no genes chosen yet, clicking a cell (or bin) colors by
-        its CLICK_GENES most expressed genes."""
-        if not controls.no_genes_chosen():
+    # In the Gene view, clicking a cell (or bin) colors by its CLICK_GENES most expressed
+    # genes. The browser passes a click on only if the previous one was in the plot too,
+    # so the click that moves over from the sidebar doesn't replace the genes.
+    clicks = ColumnDataSource(data={"x": [], "y": [], "t": []})
+    fig.js_on_event(Tap, CustomJS(args={"clicks": clicks}, code=_CLICK_JS))
+
+    def on_click(attr, old, new):
+        if not new["x"] or not controls.in_gene_view():
             return
-        genes = top_genes_at(event.x, event.y, CLICK_GENES)
+        genes = top_genes_at(new["x"][0], new["y"][0], CLICK_GENES)
         if genes:
             controls.set_genes(genes)
 
-    fig.on_event(Tap, on_tap)
+    clicks.on_change("data", on_click)
 
     def update_count(colors, idx, binning):
         """The header above the plot: which sample, how many cells, what they're
@@ -634,7 +638,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
 #: samples with at least this many cells get the "working..." overlay while redrawing
 _SLOW_REDRAW_CELLS = 200_000
-#: how many of a clicked cell's most expressed genes are put in the (empty) Gene channels
+#: how many of a clicked cell's most expressed genes are put in the Gene channels
 CLICK_GENES = 3
 #: how many of the most expressed genes in view the header lists
 N_TOP_GENES = 4
@@ -646,6 +650,25 @@ DETAIL_MAX_CELLS = 50_000
 DETAIL_MARGIN = 0.25
 #: the view must stay still this long (ms) before the individual cells are fetched
 DETAIL_DEBOUNCE_MS = 200
+
+
+#: Runs on each click (tap) in the plot. A page-wide listener remembers whether the
+#: previous mouse press was inside a plot (its figure, toolbar included); only clicks
+#: that follow one are passed on. Until the listener exists (the first click), nothing is.
+_CLICK_JS = """
+const state = window._svClickState;
+if (state === undefined) {
+    const st = window._svClickState = {lastInside: true, focusClick: false};
+    document.addEventListener('pointerdown', (e) => {
+        const inside = e.composedPath().some((el) => el.classList && el.classList.contains('bk-Figure'));
+        st.focusClick = inside && !st.lastInside;
+        st.lastInside = inside;
+    }, true);
+    return;
+}
+if (state.focusClick) return;
+clicks.data = {x: [cb_obj.x], y: [cb_obj.y], t: [Date.now()]};
+"""
 
 
 def _empty_detail() -> dict:
