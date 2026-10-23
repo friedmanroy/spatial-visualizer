@@ -21,7 +21,9 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   browse between them with a dropdown or Prev/Next.
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
   (about 25,000 per sample by default, adjustable under **Display settings**): each bin shows
-  its cells' mean expression, or their most common selected category. Zoom in until at most
+  a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
+  clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
+  scores), or their most common selected category. Zoom in until at most
   50,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
   by default), colored per cell by expression; clusters and cell types computed on the
   hexagons color each cell like its hexagon.

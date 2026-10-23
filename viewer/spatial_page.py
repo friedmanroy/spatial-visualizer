@@ -48,7 +48,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     bin_hint = pn.pane.HTML(
         f"Much faster for huge samples; on by default above {hexbin.BINNING_THRESHOLD:,} cells. "
-        "Each bin shows its cells' mean expression, or their most common selected category.",
+        "Each bin shows a gene's expression from its cells' summed counts (normalized per bin), "
+        "or their most common selected category.",
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     bin_width = pn.widgets.FloatInput(
@@ -357,7 +358,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         if dist2[j] > reach ** 2:
             return []
         rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == j]
-        profile = np.asarray(dataset.adata.X[rows].mean(axis=0)).reshape(1, -1)  # a bin's cells' mean
+        # A bin's summed counts (the order normalizing it would give), else its cells' mean.
+        source = dataset.counts if not on_cells and dataset.counts is not None else dataset.adata.X
+        profile = np.asarray(source[rows].mean(axis=0), dtype=float).reshape(1, -1)
         profile[:, dataset.background_mask()] = 0  # never pick background genes
         top = top_k_per_row(profile, k)[0]
         return [str(dataset.adata.var_names[g]) for g in top if g >= 0]

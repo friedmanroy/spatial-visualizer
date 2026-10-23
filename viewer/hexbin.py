@@ -1,8 +1,10 @@
 """Aggregating very large samples onto a hexagonal lattice, so the browser draws (and
 recolors) one hexagon per bin instead of one marker per cell.
 
-Gene / pathway values are averaged over the cells in each bin; categorical fields show
-each bin's most common (selected) category.
+A gene's value in a bin comes from its cells' summed counts, normalized per bin, when the
+app normalized the data (Dataset.bin_gene_values); otherwise, and for pathway scores, the
+cells' values are averaged. Categorical fields show each bin's most common (selected)
+category.
 """
 from __future__ import annotations
 
@@ -29,6 +31,17 @@ class HexBinning:
     @property
     def n_bins(self) -> int:
         return len(self.counts)
+
+    @property
+    def sum_matrix(self) -> sp.csr_matrix:
+        """(n_bins, n_cells): sum_matrix @ values = per-bin sum."""
+        return sp.csr_matrix(sp.diags(self.counts.astype(np.float32)) @ self.mean_matrix)
+
+    def sum(self, values: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+        """Per-bin sum of `values` (one per cell), over only the masked-in cells if given."""
+        values = np.nan_to_num(np.asarray(values, dtype=float))
+        weights = values if mask is None else np.where(mask, values, 0.0)
+        return np.bincount(self.cell_bin, weights=weights, minlength=self.n_bins)
 
     def mean(self, values: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         """Per-bin mean of `values` (one per cell). With a boolean `mask`, only the

@@ -75,6 +75,8 @@ class Dataset:
         self._binning_cache: dict[tuple[str, float], hexbin.HexBinning] = {}
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
+        self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
+        self._cell_totals: np.ndarray | None = None  # each cell's total of self.counts
         self._var_upper_lookup: dict[str, str] | None = None
         self._variable_ranking: np.ndarray | None = None  # var indices, most variable first
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
@@ -199,6 +201,35 @@ class Dataset:
             self._gene_cache[matched] = arr
         return self._gene_cache[matched]
 
+    def bin_gene_values(self, gene: str, idx: np.ndarray, binning, mask: np.ndarray | None = None):
+        """`gene`'s value in each bin of `binning` (over the sample's cells `idx`), made
+        the way clustering.hex_profiles makes hexagons: with the pre-normalization counts
+        kept, the bin's summed counts of the gene over its summed total counts, scaled to
+        the sample's median bin total, log1p'd; otherwise its cells' mean. With a boolean
+        `mask` (per cell of `idx`), only those cells count, and bins without any are NaN."""
+        values = self.gene_values(gene)
+        if values is None:
+            return None
+        if self.counts is None:
+            return binning.mean(values[idx], mask)
+        matched = self.match_gene(gene)
+        if matched not in self._count_cache:
+            col = self.counts[:, self.adata.var_names.get_loc(matched)]
+            self._count_cache[matched] = (np.asarray(col.todense()).ravel() if sp.issparse(col)
+                                          else np.asarray(col).ravel())
+        if self._cell_totals is None:
+            self._cell_totals = np.asarray(self.counts.sum(axis=1)).ravel()
+        totals = self._cell_totals[idx]
+        bin_totals = binning.sum(totals, mask)
+        all_totals = binning.sum(totals) if mask is not None else bin_totals
+        target = float(np.median(all_totals[all_totals > 0])) if (all_totals > 0).any() else 1.0
+        gene_sums = binning.sum(self._count_cache[matched][idx], mask)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out = np.where(bin_totals > 0, np.log1p(gene_sums / bin_totals * target), 0.0)
+        if mask is not None:
+            out[binning.sum(np.ones(len(idx)), mask) == 0] = np.nan
+        return out
+
 
     def background_mask(self) -> np.ndarray:
         """Boolean mask over var_names of the background genes self.gene_filter leaves
@@ -210,17 +241,20 @@ class Dataset:
     def top_genes(self, rows: np.ndarray | None = None, binning=None, k: int = 5) -> np.ndarray:
         """(n, k) var indices of the k most expressed genes of each cell in `rows` (all
         cells if None) - or, given the binning of those cells, of each bin (its cells'
-        mean) - leaving out background genes. -1 where fewer than k genes are expressed.
+        summed counts if kept, else their mean) - leaving out background genes. -1 where fewer than k genes are expressed.
         Recent results are cached, so recoloring doesn't recompute them."""
         key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning),
                self.gene_filter)
         if key not in self._top_genes_cache:
-            X = self.adata.X if rows is None else self.adata.X[rows]
+            # Normalizing a bin's summed counts doesn't change their order, so ranking
+            # the sums ranks the genes as the normalized bin would.
+            source = self.counts if binning is not None and self.counts is not None else self.adata.X
+            X = source if rows is None else source[rows]
             background = self.background_mask()
             if background.any():  # zero those genes' columns
                 X = X @ sp.diags((~background).astype(np.float32))
             if binning is not None:
-                X = binning.mean_matrix @ X
+                X = (binning.sum_matrix if self.counts is not None else binning.mean_matrix) @ X
             if len(self._top_genes_cache) >= _TOP_GENES_CACHE_SIZE:
                 self._top_genes_cache.pop(next(iter(self._top_genes_cache)))
             self._top_genes_cache[key] = top_k_per_row(X, k)

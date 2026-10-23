@@ -467,10 +467,11 @@ class ColorControls:
         self._update_filter_note()
         channels = {}
         channel_values = {}
+        genes = {}
         pathways = self.get_pathways()
         for label, w in self.channel_widgets.items():
             if is_gene:
-                gene = w["gene"].value.strip()
+                gene = genes[label] = w["gene"].value.strip()
                 values = dataset.gene_values(gene) if gene else None
                 channels[label] = (values, False)
             else:
@@ -483,7 +484,9 @@ class ColorControls:
         if binning is not None:
             cell_mask = None if mask is None else mask[idx]
             channels = {
-                label: (None if values is None else binning.mean(values[idx], cell_mask), bipolar)
+                label: (None if values is None
+                        else dataset.bin_gene_values(genes[label], idx, binning, cell_mask) if is_gene
+                        else binning.mean(values[idx], cell_mask), bipolar)
                 for label, (values, bipolar) in channels.items()
             }
             # Bins without any cell of a selected category have no mean (NaN).
@@ -554,7 +557,9 @@ class ColorControls:
                 continue
             values = np.asarray(values, dtype=np.float32)
             if binned:
-                values = binning.mean(take(values), None if mask is None else take(mask))
+                bin_mask = None if mask is None else take(mask)
+                values = (dataset.bin_gene_values(name, idx, binning, bin_mask) if is_gene
+                          else binning.mean(take(values), bin_mask))
             else:
                 values = take(np.where(mask, values, np.nan) if mask is not None else values)
             cols[f"hv_{label.lower()}"] = np.asarray(values, dtype=np.float32)
