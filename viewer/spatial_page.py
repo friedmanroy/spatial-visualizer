@@ -356,8 +356,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         if dist2[j] > reach ** 2:
             return []
         rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == j]
-        profile = dataset.adata.X[rows].mean(axis=0)  # a bin's cells' mean
-        top = top_k_per_row(np.asarray(profile).reshape(1, -1), k)[0]
+        profile = np.asarray(dataset.adata.X[rows].mean(axis=0)).reshape(1, -1)  # a bin's cells' mean
+        profile[:, dataset.background_mask()] = 0  # never pick background genes
+        top = top_k_per_row(profile, k)[0]
         return [str(dataset.adata.var_names[g]) for g in top if g >= 0]
 
     # In the Gene view, clicking a cell (or bin) colors by its CLICK_GENES most expressed
@@ -437,9 +438,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     controls = ColorControls(
         get_dataset, get_pathways, on_change=recolor_only, get_active_indices=get_active_indices,
     )
+    dataset.gene_filter = state.gene_filter.value  # before the gene suggestions are filled in
     controls.refresh_for_dataset()
     state.pathway_listeners.append(controls.refresh_pathway_options)
-    dataset.gene_filter = state.gene_filter.value
     update_markers(lattice0)
     update_top_genes(None)
     recolor_only()
@@ -449,6 +450,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         dataset.gene_filter = gene_filter
         with pn.io.hold():
             update_top_genes(view_box())
+            controls.refresh_gene_suggestions()
             recolor_only()
 
     state.gene_filter.listeners.append(on_gene_filter)

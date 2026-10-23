@@ -215,11 +215,21 @@ class ColorControls:
                 self._rebuild_value_picker()
             pathway_names = sorted(self.get_pathways().keys())
             gene_names = list(dataset.adata.var_names)
-            dropdown_options = {_DROPDOWN_PROMPT: ""}
-            dropdown_options.update({g: g for g in dataset.top_variable_genes(_N_DROPDOWN_GENES)})
             for w in self.channel_widgets.values():
                 w["pathway"].options = _pathway_options(pathway_names)
                 w["gene"].options = gene_names
+            self.refresh_gene_suggestions()
+
+    def refresh_gene_suggestions(self):
+        """Re-fills each channel's dropdown of most variable genes - e.g. after the
+        background-gene filter (Dataset.gene_filter) changed."""
+        dataset = self.get_dataset()
+        if dataset is None:
+            return
+        dropdown_options = {_DROPDOWN_PROMPT: ""}
+        dropdown_options.update({g: g for g in dataset.top_variable_genes(_N_DROPDOWN_GENES)})
+        with pn.io.hold():
+            for w in self.channel_widgets.values():
                 w["gene_dropdown"].options = dropdown_options
                 self._sync_dropdown(w)
 
@@ -415,11 +425,12 @@ class ColorControls:
         return self.mode.value == "Gene & Pathway" and self.expr_mode.value == "Gene"
 
     def set_genes(self, genes: list[str]):
-        """Puts `genes` in the red, green and blue channels (in that order), recoloring once."""
+        """Puts `genes` in the red, green and blue channels (in that order), recoloring once.
+        Channels beyond the given genes are cleared, so no earlier gene lingers."""
         self._hold_fire = True
         try:
-            for w, gene in zip(self.channel_widgets.values(), genes):
-                w["gene"].value = gene
+            for i, w in enumerate(self.channel_widgets.values()):
+                w["gene"].value = genes[i] if i < len(genes) else ""
         finally:
             self._hold_fire = False
         self._fire()

@@ -256,6 +256,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     def on_gene_filter(gene_filter):
         if state.embedding is not None:  # the hover's most expressed genes
             state.embedding.gene_filter = gene_filter
+            controls.refresh_gene_suggestions()
             recolor_only()
 
     state.gene_filter.listeners.append(on_gene_filter)

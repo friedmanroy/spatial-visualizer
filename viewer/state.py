@@ -73,7 +73,7 @@ class Dataset:
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
         self._var_upper_lookup: dict[str, str] | None = None
-        self._top_variable_genes: dict[int, list[str]] = {}
+        self._variable_ranking: np.ndarray | None = None  # var indices, most variable first
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
         # Background genes (clustering.GeneFilter) left out of the "most expressed" genes.
         self.gene_filter = None
@@ -171,15 +171,16 @@ class Dataset:
         return self._var_upper_lookup.get(gene.upper())
 
     def top_variable_genes(self, n: int) -> list[str]:
-        """The `n` most highly variable genes, most variable (normalized dispersion) first.
-        Computed with inplace=False so it never touches var['highly_variable'], which
-        PCA/clustering use with their own (larger) gene count."""
-        if n not in self._top_variable_genes:
+        """The `n` most highly variable genes, most variable (normalized dispersion) first,
+        leaving out background genes. Computed with inplace=False so it never touches
+        var['highly_variable'], which PCA/clustering use with their own (larger) gene count."""
+        if self._variable_ranking is None:
             hvg = sc.pp.highly_variable_genes(self.adata, flavor="seurat", inplace=False)
-            hvg.index = self.adata.var_names
-            ranked = hvg["dispersions_norm"].dropna().sort_values(ascending=False, kind="stable")
-            self._top_variable_genes[n] = [str(g) for g in ranked.index[:n]]
-        return self._top_variable_genes[n]
+            dispersion = hvg["dispersions_norm"].to_numpy(dtype=float)
+            ranked = np.argsort(-np.nan_to_num(dispersion, nan=-np.inf), kind="stable")
+            self._variable_ranking = ranked[np.isfinite(dispersion[ranked])]
+        ranked = self._variable_ranking[~self.background_mask()[self._variable_ranking]]
+        return [str(self.adata.var_names[i]) for i in ranked[:n]]
 
     def gene_values(self, gene: str) -> np.ndarray | None:
         # Index the raw matrix directly (bypassing AnnData's __getitem__, which
