@@ -6,6 +6,7 @@ import panel as pn
 
 from .embedding_page import build_embedding_page
 from .busy_overlay import BusyOverlay
+from .de_dialog import DEDialog
 from .celltype_controls import CellTypingControls
 from .error_dialog import build_error_dialog
 from .gene_filter_controls import GeneFilterControls
@@ -20,6 +21,7 @@ def build() -> pn.viewable.Viewable:
     pn.extension("tabulator")  # the Cell types tab's editable table needs its JS loaded up front
     state = AppState()
     state.busy = BusyOverlay()
+    state.de_dialog = DEDialog()
     state.celltyping = CellTypingControls(state.busy)
     state.gene_filter = GeneFilterControls()
     root = pn.Column(sizing_mode="stretch_both")
@@ -47,4 +49,4 @@ def build() -> pn.viewable.Viewable:
     error_overlay, show_error = build_error_dialog()
     pn.config.exception_handler = show_error
 
-    return pn.Column(root, state.busy.layout, error_overlay, sizing_mode="stretch_both")
+    return pn.Column(root, state.de_dialog.layout, state.busy.layout, error_overlay, sizing_mode="stretch_both")

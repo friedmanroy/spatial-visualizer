@@ -59,12 +59,28 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   list to add your own gene set. It's immediately available in the Gene & Pathway coloring,
   and saved to `cache/custom_pathways.json` so it's loaded automatically next time (the
   default `pathways.json` is left untouched).
+- **Regions (lasso)** - in the **Regions & differential expression** panel, turn on **Draw
+  regions** (or pick the lasso in the plot's toolbar) and drag around areas of the tissue. Each
+  lasso makes a new region, or grows a chosen one; regions get their own color and an outline
+  with their name, and can be renamed, recolored or deleted. Membership is tested against every
+  cell of the sample, so it works the same over hexagonal bins or zoomed-in cells. **Gray out
+  cells outside the regions** keeps any coloring only inside them, and **Save as field** adds
+  them as a `regions` field to color by (here and on the scRNA / snRNA tab). Regions are saved
+  with the file in `cache/` and come back the next time it's opened.
+- **Differential expression between regions** - compare each region with the rest of its
+  sample (the default), each region with all the other regions, or region A with region B,
+  using scanpy's `rank_genes_groups` (Wilcoxon or t-test) on the normalized data, with
+  background genes left out and at most 20,000 random cells per side. The results open in a
+  pop-up with a tab per comparison: a volcano plot (click a gene to color the tissue by it), a
+  searchable, sortable gene table (log2 FC, adjusted p-value, % of cells expressing on each
+  side), buttons to color by the top up / down or checked genes, and a CSV download. Cells
+  in one drawn region aren't independent replicates, so treat the p-values as a ranking.
 - **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
   from the spatial data itself - by default on its hexagons (one point per hexagon, colored by
   its most common category), or on individual cells - with configurable number of PCs and neighbors. Uses scanpy's
   own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
-- **Persistent choices** - custom category colors, which fields are enabled, and the
-  sample/FOV column are cached to
+- **Persistent choices** - custom category colors, which fields are enabled, the
+  sample/FOV column and the drawn regions are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
 - **Loading overlay** - long steps (loading, clustering, PCA/UMAP...) gray out the page with a
@@ -181,6 +197,10 @@ viewer/
   app.py                 assembles the landing page and the tabbed main viewer
   landing.py              landing page: file path, sample/FOV column, field selection
   spatial_page.py          "Spatial" tab
+  regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
+  regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
+  de.py                    differential expression between regions (scanpy rank_genes_groups)
+  de_dialog.py             pop-up with DE results: volcano plot, gene table, CSV download
   embedding_page.py        "scRNA / snRNA" tab
   pathways_page.py         "Pathways" tab: add/remove custom gene sets
   color_controls.py        shared Field / Gene & Pathway coloring controls
@@ -197,7 +217,7 @@ viewer/
   busy_overlay.py            full-page "working..." overlay
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
-  cache.py                   persists per-dataset color/field choices to cache/
+  cache.py                   persists per-dataset color/field choices and regions to cache/
   file_picker.py              native OS file-picker integration
   error_dialog.py             global error popup
   data/pathways.json        example gene-set definitions (bundled with the package)

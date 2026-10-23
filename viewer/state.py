@@ -237,6 +237,8 @@ class AppState:
         self.field_listeners: list = []
         # Full-page "working..." overlay for long steps (viewer.busy_overlay.BusyOverlay).
         self.busy = None
+        # Pop-up with differential-expression results between regions (de_dialog.DEDialog).
+        self.de_dialog = None
         # Cell-typing settings (celltype_controls.CellTypingControls), shared by the
         # landing page and the Spatial tab so choices carry over.
         self.celltyping = None

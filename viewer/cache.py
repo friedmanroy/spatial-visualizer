@@ -62,6 +62,14 @@ class ColorCache:
         self.data["sample_column"] = column
         self._save()
 
+    def get_regions(self) -> list[dict]:
+        """Regions drawn on the Spatial tab (see regions.Region.to_json), oldest first."""
+        return self.data.get("regions", [])
+
+    def set_regions(self, regions: list[dict]):
+        self.data["regions"] = regions
+        self._save()
+
     def _save(self):
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(self.path, "w") as f:
