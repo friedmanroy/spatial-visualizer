@@ -18,6 +18,7 @@ from .color_controls import ColorControls
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY_RGBA
+from .regions_panel import RegionsPanel
 
 
 def build_spatial_page(state) -> pn.viewable.Viewable:
@@ -47,7 +48,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     bin_hint = pn.pane.HTML(
         f"Much faster for huge samples; on by default above {hexbin.BINNING_THRESHOLD:,} cells. "
-        "Each bin shows its cells' mean expression, or their most common selected category.",
+        "Each bin shows a gene's expression from its cells' summed counts (normalized per bin), "
+        "or their most common selected category.",
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     bin_width = pn.widgets.FloatInput(
@@ -231,11 +233,11 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     def current_colors(idx: np.ndarray, binning) -> np.ndarray:
         if binning is not None:
             colors = controls.compute_colors(idx, binning)
-            return colors if len(colors) else np.full(binning.n_bins, GRAY_RGBA)
-        full_colors = controls.compute_colors()
-        if len(full_colors) == 0:
-            return np.full(len(idx), GRAY_RGBA)
-        return full_colors[idx]
+            colors = colors if len(colors) else np.full(binning.n_bins, GRAY_RGBA)
+        else:
+            full_colors = controls.compute_colors()
+            colors = full_colors[idx] if len(full_colors) else np.full(len(idx), GRAY_RGBA)
+        return regions_panel.mask_colors(colors, idx, binning)
 
     # -- individual cells when zoomed in (hex-binned samples only) --------------------
     # `cells`: the sample-local indices of the cells drawn individually (None: just bins),
@@ -356,7 +358,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         if dist2[j] > reach ** 2:
             return []
         rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == j]
-        profile = np.asarray(dataset.adata.X[rows].mean(axis=0)).reshape(1, -1)  # a bin's cells' mean
+        # A bin's summed counts (the order normalizing it would give), else its cells' mean.
+        source = dataset.counts if not on_cells and dataset.counts is not None else dataset.adata.X
+        profile = np.asarray(source[rows].mean(axis=0), dtype=float).reshape(1, -1)
         profile[:, dataset.background_mask()] = 0  # never pick background genes
         top = top_k_per_row(profile, k)[0]
         return [str(dataset.adata.var_names[g]) for g in top if g >= 0]
@@ -402,6 +406,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         if detail["top_genes"]:
             genes = ", ".join(f"<b>{html.escape(g)}</b>" for g in detail["top_genes"])
             lines.append(f'<span style="color:#555;font-size:13px">Most expressed in view: {genes}</span>')
+        if regions_line := regions_panel.header_html():
+            lines.append(regions_line)
         plot_header.object = "<br>".join(lines)
 
     def redraw_full(sample_id: str):
@@ -438,6 +444,18 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     controls = ColorControls(
         get_dataset, get_pathways, on_change=recolor_only, get_active_indices=get_active_indices,
     )
+
+    def color_by_genes(genes: list[str]):
+        with pn.io.hold():
+            controls.mode.value = "Gene & Pathway"
+            controls.expr_mode.value = "Gene"
+            controls.set_genes(genes)
+
+    # Lasso-drawn regions; recoloring after a change grays out cells outside them if asked.
+    regions_panel = RegionsPanel(
+        state, fig, get_sample=lambda: sample_select.value, on_change=recolor_only,
+        add_field=lambda col: add_and_announce_field(col, select=True), color_by_genes=color_by_genes,
+    )
     dataset.gene_filter = state.gene_filter.value  # before the gene suggestions are filled in
     controls.refresh_for_dataset()
     state.pathway_listeners.append(controls.refresh_pathway_options)
@@ -465,7 +483,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
     # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
     # cell-type one by one, so by default hexagonal bins are clustered (each by its
-    # spots' mean expression) and typed, and every spot gets its bin's result.
+    # spots' summed, then normalized, counts) and typed, and every spot gets its bin's result.
     leiden_unit = pn.widgets.RadioButtonGroup(
         options=[clustering.HEXAGONS, clustering.CELLS], value=clustering.HEXAGONS,
         button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
@@ -487,7 +505,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_target.object = (
             f"Clusters and cell-types hexagons {leiden_width.value:g} cell spacings wide "
             + ("(the ones shown) " if same else "")
-            + "by their mean expression, then gives each spot / cell its hexagon's result - "
+            + ("by their spots' summed counts (normalized per hexagon), " if dataset.counts is not None
+               else "by their spots' mean expression, ")
+            + "then gives each spot / cell its hexagon's result - "
             "for sub-cellular data such as Xenium or Open-ST. "
             if hexes else "Clusters and cell-types individual cells - for segmented single-cell data. "
         ) + "The result is added as a new field to color by."
@@ -624,6 +644,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         async with busy_if_slow(event.new, f"Drawing {event.new}..."):
             with pn.io.hold():
                 controls.update_category_counts()
+                regions_panel.refresh()
                 redraw_full(event.new)
 
     def on_prev(event):
@@ -661,19 +682,25 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     next_btn.on_click(on_next)
 
     # Coloring (the part used constantly) right under the sample picker, taking all the
-    # spare height; set-once settings sit in collapsed panels at the bottom.
+    # spare height; set-once settings sit in collapsed panels at the bottom. When opened
+    # panels don't fit, the coloring keeps a usable height and the sidebar scrolls.
+    controls.layout.min_height = _MIN_COLORING_HEIGHT
     sidebar = pn.Column(
         sample_nav,
         controls.layout,
+        regions_panel.card,
         display_card,
         leiden_card,
         width=380,
         sizing_mode="stretch_height",
+        scroll=True,
     )
     plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
 
 
+#: the coloring controls never shrink below this (px) to make room for opened panels
+_MIN_COLORING_HEIGHT = 340
 #: samples with at least this many cells get the "working..." overlay while redrawing
 _SLOW_REDRAW_CELLS = 200_000
 #: how many of a clicked cell's most expressed genes are put in the Gene channels

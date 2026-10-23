@@ -21,7 +21,9 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   browse between them with a dropdown or Prev/Next.
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
   (about 25,000 per sample by default, adjustable under **Display settings**): each bin shows
-  its cells' mean expression, or their most common selected category. Zoom in until at most
+  a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
+  clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
+  scores), or their most common selected category. Zoom in until at most
   50,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
   by default), colored per cell by expression; clusters and cell types computed on the
   hexagons color each cell like its hexagon.
@@ -29,9 +31,15 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   the cells currently in view, updating as you pan and zoom.
 - **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
   (with the confidence for suggested cell types), or its values for the genes / pathways shown.
+- **Normalization** - after loading, a checkbox chooses whether to normalize `.X`
+  (`normalize_total` + `log1p`); it's ticked when `.X` looks like raw counts, and the choice
+  is remembered per file. Each cell / spot is normalized for coloring and differential
+  expression, but hexagons (clustering, cell typing and PCA/UMAP on hexagons) **sum their
+  spots' raw counts first** and are normalized as one unit afterwards. Left unticked, `.X` is
+  used as-is and a hexagon holds its spots' mean.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
-  clusters **hexagons** (each one's mean expression; width adjustable) and every spot gets its
+  clusters **hexagons** (width adjustable) and every spot gets its
   hexagon's cluster - the way to cluster sub-cellular spots (Xenium transcripts, Open-ST,
   Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
   single-cell data.
@@ -59,12 +67,28 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   list to add your own gene set. It's immediately available in the Gene & Pathway coloring,
   and saved to `cache/custom_pathways.json` so it's loaded automatically next time (the
   default `pathways.json` is left untouched).
+- **Regions (lasso)** - in the **Regions & differential expression** panel, turn on **Draw
+  regions** (or pick the lasso in the plot's toolbar) and drag around areas of the tissue. Each
+  lasso makes a new region, or grows a chosen one; regions get their own color and an outline
+  with their name, and can be renamed, recolored or deleted. Membership is tested against every
+  cell of the sample, so it works the same over hexagonal bins or zoomed-in cells. **Gray out
+  cells outside the regions** keeps any coloring only inside them, and **Save as field** adds
+  them as a `regions` field to color by (here and on the scRNA / snRNA tab). Regions are saved
+  with the file in `cache/` and come back the next time it's opened.
+- **Differential expression between regions** - compare each region with the rest of its
+  sample (the default), each region with all the other regions, or region A with region B,
+  using scanpy's `rank_genes_groups` (Wilcoxon or t-test) on the normalized data, with
+  background genes left out and at most 20,000 random cells per side. The results open in a
+  pop-up with a tab per comparison: a volcano plot (click a gene to color the tissue by it), a
+  searchable, sortable gene table (log2 FC, adjusted p-value, % of cells expressing on each
+  side), buttons to color by the top up / down or checked genes, and a CSV download. Cells
+  in one drawn region aren't independent replicates, so treat the p-values as a ranking.
 - **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
   from the spatial data itself - by default on its hexagons (one point per hexagon, colored by
   its most common category), or on individual cells - with configurable number of PCs and neighbors. Uses scanpy's
   own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
-- **Persistent choices** - custom category colors, which fields are enabled, and the
-  sample/FOV column are cached to
+- **Persistent choices** - custom category colors, which fields are enabled, the
+  sample/FOV column and the drawn regions are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
 - **Loading overlay** - long steps (loading, clustering, PCA/UMAP...) gray out the page with a
@@ -150,7 +174,8 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
 1. Enter (or browse to) the path of a spatial `.h5ad` file - it must have coordinates in
    `adata.obsm['spatial']`.
 2. Once loaded, pick which obs column separates samples/fields-of-view (leave it as **None**
-   if the file is a single sample; the choice is remembered for next time), optionally point at a `pathways.json` file (defaults to
+   if the file is a single sample; the choice is remembered for next time), choose whether to
+   normalize the expression (see **Normalization** above), optionally point at a `pathways.json` file (defaults to
    the bundled `viewer/data/pathways.json`), and choose which obs fields should be offered for
    coloring.
 3. Click **Open viewer**. The **Spatial** tab shows each cell as a hexagon, square or circle (auto-detected)
@@ -181,6 +206,10 @@ viewer/
   app.py                 assembles the landing page and the tabbed main viewer
   landing.py              landing page: file path, sample/FOV column, field selection
   spatial_page.py          "Spatial" tab
+  regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
+  regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
+  de.py                    differential expression between regions (scanpy rank_genes_groups)
+  de_dialog.py             pop-up with DE results: volcano plot, gene table, CSV download
   embedding_page.py        "scRNA / snRNA" tab
   pathways_page.py         "Pathways" tab: add/remove custom gene sets
   color_controls.py        shared Field / Gene & Pathway coloring controls
@@ -197,7 +226,7 @@ viewer/
   busy_overlay.py            full-page "working..." overlay
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
-  cache.py                   persists per-dataset color/field choices to cache/
+  cache.py                   persists per-dataset color/field choices and regions to cache/
   file_picker.py              native OS file-picker integration
   error_dialog.py             global error popup
   data/pathways.json        example gene-set definitions (bundled with the package)
