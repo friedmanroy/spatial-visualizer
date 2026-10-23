@@ -5,8 +5,9 @@ Always works on a highly-variable-gene subset *copy*, so the dataset's own .X (u
 elsewhere for gene-expression coloring) is never mutated by scaling.
 
 Sub-cellular spots (Xenium transcripts, Open-ST, Visium HD...) are too sparse to cluster
-or type one by one, so everything here can instead work on hexagonal bins: each bin's
-profile is its spots' mean expression, and each spot gets its bin's result.
+or type one by one, so everything here can instead work on hexagonal bins, and each spot
+gets its bin's result. A bin's profile is its spots' summed raw counts, normalized and
+log1p'd as one unit (see hex_profiles) - not an average of the spots' own log values.
 
 Broadly expressed "background" genes (mitochondrial, ribosomal, or detected almost
 everywhere) can be left out of the genes PCA / UMAP / Leiden use - see GeneFilter.
@@ -96,6 +97,21 @@ def normalize_if_raw(adata) -> bool:
     return True
 
 
+def normalize_keeping_counts(adata):
+    """normalize_total + log1p on .X (whatever it holds), returning the values from
+    before - kept so hexagonal bins can sum raw counts before normalizing (hex_profiles).
+    A sparse .X keeps only a copy of its values; the index arrays are shared."""
+    X = adata.X
+    if sp.issparse(X):
+        X = adata.X = sp.csr_matrix(X)
+        counts = sp.csr_matrix((X.data.copy(), X.indices, X.indptr), shape=X.shape)
+    else:
+        counts = np.array(X, copy=True)
+    sc.pp.normalize_total(adata)
+    sc.pp.log1p(adata)
+    return counts
+
+
 def _no_report(text: str):
     pass
 
@@ -175,33 +191,50 @@ def run_leiden(dataset, resolution: float, n_pcs: int = DEFAULT_N_PCS,
     return col
 
 
-def hex_profiles(dataset, width_factor: float, X=None):
+def hex_profiles(dataset, width_factor: float, genes: list[str] | None = None):
     """(AnnData with one row per hexagonal bin - `width_factor` cell spacings wide - of
-    every sample, holding its cells' mean expression; [(cell indices, HexBinning)] per
-    sample, in the same order as the rows). `X` (rows = cells) defaults to adata.X.
-    obs holds each bin's sample and cell count, obsm['spatial'] its center."""
+    every sample; [(cell indices, HexBinning)] per sample, in the same order as the rows).
+    obs holds each bin's sample and cell count, obsm['spatial'] its center.
+
+    If the app normalized the data (dataset.counts holds the values from before), a bin's
+    profile is its cells' summed counts, then normalize_total + log1p over the bins - the
+    bin is treated as one deeper-sequenced spot. Otherwise .X was used as-is, and a bin
+    holds its cells' mean. `genes` keeps only those columns (after normalizing, which
+    needs every gene's counts)."""
     adata = dataset.adata
-    X = adata.X if X is None else X
+    summed = dataset.counts is not None
+    X = dataset.counts if summed else adata.X
     profiles, binnings, samples, counts, centers = [], [], [], [], []
     for sid in dataset.sample_ids:
         idx = dataset.sample_indices(sid)
         binning = dataset.hex_binning(sid, width_factor)
-        mean = binning.mean_matrix @ X[idx]
-        profiles.append(sp.csr_matrix(mean) if sp.issparse(mean) else np.asarray(mean))
+        weights = sp.diags(binning.counts.astype(np.float32)) @ binning.mean_matrix if summed else binning.mean_matrix
+        profile = weights @ X[idx]
+        profiles.append(sp.csr_matrix(profile, dtype=np.float32) if sp.issparse(profile) else np.asarray(profile))
         binnings.append((idx, binning))
         samples += [sid] * binning.n_bins
         counts.append(binning.counts)
         centers.append(binning.centers)
     stacked = sp.vstack(profiles, format="csr") if sp.issparse(profiles[0]) else np.vstack(profiles)
     bins = ad.AnnData(stacked)
-    if X is adata.X:
-        bins.var_names = adata.var_names
+    bins.var_names = adata.var_names
+    if summed:
+        sc.pp.normalize_total(bins)
+        sc.pp.log1p(bins)
+    if genes is not None:
+        bins = bins[:, genes].copy()
     bins.obs["sample"] = pd.Categorical(samples, categories=dataset.sample_ids)
     bins.obs["n_cells"] = np.concatenate(counts)
     bins.obs_names = [f"hex{i}" for i in range(bins.n_obs)]
     bins.obsm["spatial"] = np.vstack(centers)
     bins.uns["unit"] = "hexagons"
     return bins, binnings
+
+
+def hex_profile_verb(dataset) -> str:
+    """How hex_profiles makes the bins' profiles, for progress messages."""
+    return ("Summing counts and normalizing" if dataset.counts is not None
+            else "Averaging expression")
 
 
 def bins_to_cells(bin_values: np.ndarray, binnings, n_obs: int, fill=None) -> np.ndarray:
@@ -224,13 +257,13 @@ def run_leiden_on_hexbins(dataset, width_factor: float, resolution: float,
                           n_neighbors: int = DEFAULT_N_NEIGHBORS, report=_no_report,
                           gene_filter: GeneFilter | None = None) -> tuple[str, int]:
     """Leiden-clusters the hexagonal bins (`width_factor` cell spacings wide) of every
-    sample, each bin's profile being its cells' mean expression, then gives every cell
+    sample (each bin's profile as in hex_profiles), then gives every cell
     its bin's cluster - the way to cluster sub-cellular spots, and far faster than
     per-cell clustering on million-cell data. Stores the labels as an obs column
     (remembering the bin width in dataset.hex_clusterings, so cell typing can work on
     the same bins) and returns (column name, number of bins clustered)."""
     adata = dataset.adata
-    report(f"Averaging expression within hexagonal bins ({len(dataset.sample_ids)} sample(s))")
+    report(f"{hex_profile_verb(dataset)} within hexagonal bins ({len(dataset.sample_ids)} sample(s))")
     bins, binnings = hex_profiles(dataset, width_factor)
     bin_labels = _leiden_labels(bins, resolution, n_pcs, n_neighbors, report, gene_filter)
     report(f"Giving each cell its bin's cluster ({bins.n_obs:,} bins)")

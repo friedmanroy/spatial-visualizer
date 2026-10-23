@@ -65,6 +65,9 @@ class Dataset:
     def __init__(self, adata, name: str = "dataset"):
         self.adata = adata
         self.name = name
+        # .X from before the app normalized it (normalize_total + log1p), or None if it
+        # didn't: hexagonal bins sum these counts and then normalize (clustering.hex_profiles).
+        self.counts = None
         self.sample_col: str | None = None
         self.sample_ids: list[str] = []
         self._sample_indices: dict[str, np.ndarray] = {}

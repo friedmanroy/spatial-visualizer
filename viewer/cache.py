@@ -62,6 +62,14 @@ class ColorCache:
         self.data["sample_column"] = column
         self._save()
 
+    def get_normalize(self) -> bool | None:
+        """Whether the user last chose to normalize this file (None: never chose)."""
+        return self.data.get("normalize")
+
+    def set_normalize(self, normalize: bool):
+        self.data["normalize"] = normalize
+        self._save()
+
     def get_regions(self) -> list[dict]:
         """Regions drawn on the Spatial tab (see regions.Region.to_json), oldest first."""
         return self.data.get("regions", [])

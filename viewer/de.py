@@ -1,8 +1,8 @@
 """Differential expression between regions drawn on the Spatial tab, with scanpy's
 `sc.tl.rank_genes_groups`.
 
-Works on .X as loaded, which the landing page has already normalized + log1p'd if it
-held raw counts (so the log fold changes are meaningful). Background genes are left
+Works on the cells' .X, which the landing page normalizes + log1p's when asked to (the
+default for raw counts), so the log fold changes are meaningful. Background genes are left
 out, as everywhere else in the app. Cells in one lasso aren't independent replicates,
 so the p-values are best read as a ranking rather than as calibrated significance.
 """

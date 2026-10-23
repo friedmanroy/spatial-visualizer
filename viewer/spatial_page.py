@@ -480,7 +480,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
     # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
     # cell-type one by one, so by default hexagonal bins are clustered (each by its
-    # spots' mean expression) and typed, and every spot gets its bin's result.
+    # spots' summed, then normalized, counts) and typed, and every spot gets its bin's result.
     leiden_unit = pn.widgets.RadioButtonGroup(
         options=[clustering.HEXAGONS, clustering.CELLS], value=clustering.HEXAGONS,
         button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
@@ -502,7 +502,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_target.object = (
             f"Clusters and cell-types hexagons {leiden_width.value:g} cell spacings wide "
             + ("(the ones shown) " if same else "")
-            + "by their mean expression, then gives each spot / cell its hexagon's result - "
+            + ("by their spots' summed counts (normalized per hexagon), " if dataset.counts is not None
+               else "by their spots' mean expression, ")
+            + "then gives each spot / cell its hexagon's result - "
             "for sub-cellular data such as Xenium or Open-ST. "
             if hexes else "Clusters and cell-types individual cells - for segmented single-cell data. "
         ) + "The result is added as a new field to color by."

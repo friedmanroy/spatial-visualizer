@@ -83,7 +83,7 @@ def _copy_field(hexes: Dataset, col: str):
 def _hexagon_dataset(spatial: Dataset, width_factor: float, report=clustering._no_report) -> Dataset:
     """A Dataset with one row per hexagonal bin of the spatial data (its cells' mean
     expression), carrying the spatial data's coloring fields over to the hexagons."""
-    report(f"Averaging expression within hexagons {width_factor:g} cell spacings wide")
+    report(f"{clustering.hex_profile_verb(spatial)} within hexagons {width_factor:g} cell spacings wide")
     bins, binnings = clustering.hex_profiles(spatial, width_factor)
     hexes = Dataset(bins, name=f"{spatial.name} (hexagons {width_factor:g} wide)")
     hexes.hex_source = (spatial, binnings)

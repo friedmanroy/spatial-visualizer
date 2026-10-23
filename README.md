@@ -29,9 +29,15 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   the cells currently in view, updating as you pan and zoom.
 - **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
   (with the confidence for suggested cell types), or its values for the genes / pathways shown.
+- **Normalization** - after loading, a checkbox chooses whether to normalize `.X`
+  (`normalize_total` + `log1p`); it's ticked when `.X` looks like raw counts, and the choice
+  is remembered per file. Each cell / spot is normalized for coloring and differential
+  expression, but hexagons (clustering, cell typing and PCA/UMAP on hexagons) **sum their
+  spots' raw counts first** and are normalized as one unit afterwards. Left unticked, `.X` is
+  used as-is and a hexagon holds its spots' mean.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
-  clusters **hexagons** (each one's mean expression; width adjustable) and every spot gets its
+  clusters **hexagons** (width adjustable) and every spot gets its
   hexagon's cluster - the way to cluster sub-cellular spots (Xenium transcripts, Open-ST,
   Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
   single-cell data.
@@ -166,7 +172,8 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
 1. Enter (or browse to) the path of a spatial `.h5ad` file - it must have coordinates in
    `adata.obsm['spatial']`.
 2. Once loaded, pick which obs column separates samples/fields-of-view (leave it as **None**
-   if the file is a single sample; the choice is remembered for next time), optionally point at a `pathways.json` file (defaults to
+   if the file is a single sample; the choice is remembered for next time), choose whether to
+   normalize the expression (see **Normalization** above), optionally point at a `pathways.json` file (defaults to
    the bundled `viewer/data/pathways.json`), and choose which obs fields should be offered for
    coloring.
 3. Click **Open viewer**. The **Spatial** tab shows each cell as a hexagon, square or circle (auto-detected)

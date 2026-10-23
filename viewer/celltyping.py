@@ -247,19 +247,18 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     net["target"] = [dataset.match_gene(g) for g in net["target"]]
     net = net.dropna(subset=["target"]).drop_duplicates()
     genes = sorted(set(net["target"]))
-    X = adata.X[:, [adata.var_names.get_loc(g) for g in genes]] if genes else None
 
     # What gets scored: hexagons for a hexagon clustering, else the cells themselves.
     width = dataset.hex_clusterings.get(cluster_col)
     binnings = None
-    if X is None:
+    if not genes:
         units, unit_codes = None, codes
     elif width is not None:
-        report(f"Averaging the marker genes within hexagonal bins ({width:g} cell spacings wide)")
-        units, binnings = clustering.hex_profiles(dataset, width, X)
+        report(f"{clustering.hex_profile_verb(dataset)} within hexagonal bins ({width:g} cell spacings wide)")
+        units, binnings = clustering.hex_profiles(dataset, width, genes)
         unit_codes = clustering.cells_to_bins(codes, binnings)
     else:
-        units, unit_codes = ad.AnnData(X), codes
+        units, unit_codes = ad.AnnData(adata.X[:, [adata.var_names.get_loc(g) for g in genes]]), codes
     if units is not None:
         units.var_names = genes
         background = clustering.background_genes(units, gene_filter)

@@ -37,6 +37,14 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         options=[NO_SPLIT],
     )
     pathways_input = pn.widgets.TextInput(name="pathways.json path (optional)", value="")
+    normalize_checkbox = pn.widgets.Checkbox(name="Normalize expression (normalize_total + log1p)", value=True)
+    normalize_hint = pn.pane.HTML(
+        "For raw counts. Each cell / spot is normalized for coloring, differential expression and "
+        "per-cell clustering; hexagons sum their spots' <i>raw</i> counts first and are then "
+        "normalized as one unit. Uncheck if <code>.X</code> is already normalized - it's then used "
+        "as-is, and hexagons hold their spots' mean.",
+        styles=HINT_STYLE, width=560, margin=(0, 10, 10, 30),
+    )
 
     field_select_all_btn = pn.widgets.Button(name="Select all", width=110)
     field_deselect_all_btn = pn.widgets.Button(name="Deselect all", width=110)
@@ -62,7 +70,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         button_style="outline", visible=False,
     )
     leiden_unit_hint = pn.pane.HTML(
-        "<b>Hexagons</b>: averages the spots / cells in hexagonal bins (the same bins the "
+        "<b>Hexagons</b>: pools the spots / cells in hexagonal bins (the same bins the "
         "Spatial tab draws for huge samples), clusters and cell-types those, and gives each "
         "spot its hexagon's result - use this for sub-cellular data such as Xenium or Open-ST. "
         "<b>Individual cells</b>: for segmented single-cell data.",
@@ -93,7 +101,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
     open_status = pn.pane.Markdown("")
     step2 = pn.Column(
-        sample_col_select, pathways_input, field_picker, leiden_checkbox, leiden_unit, leiden_unit_hint,
+        sample_col_select, pathways_input, normalize_checkbox, normalize_hint, field_picker,
+        leiden_checkbox, leiden_unit, leiden_unit_hint,
         leiden_width, leiden_resolution, typing_box,
         open_btn, open_status, visible=False,
     )
@@ -134,10 +143,12 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                     "spatial data. Pick a different file."
                 )
                 return
-            busy.step(f"Normalizing {adata.n_obs:,} cells (normalize_total + log1p, if the data is raw counts)")
-            normalized = await asyncio.to_thread(clustering.normalize_if_raw, adata)
+            raw = await asyncio.to_thread(clustering.looks_like_raw_counts, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
+            cached_normalize = ds.color_cache.get_normalize()
+            normalize_checkbox.value = raw if cached_normalize is None else cached_normalize
+            normalize_checkbox.disabled = False
             typing.guess_species(adata.var_names)
             state.gene_filter.set_genes(adata.var_names)
             remember_folder_of(path)
@@ -170,9 +181,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
 
             status.object = (
                 f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`. "
-                + ("Normalized (`normalize_total` + `log1p`)." if normalized else
-                   "`.X` doesn't look like raw counts (it has fractional or negative values), "
-                   "so it was used as-is, assuming it's already normalized.")
+                + ("`.X` looks like raw counts." if raw else
+                   "`.X` doesn't look like raw counts (it has fractional or negative values) - "
+                   "it's probably normalized already.")
             )
             step2.visible = True
         except Exception as exc:  # surface the error in the UI rather than crashing the app
@@ -183,6 +194,13 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
+        # Before anything reads the expression; only once, should opening be retried.
+        if normalize_checkbox.value and ds.counts is None:
+            async with busy.show("Normalizing...", f"{ds.adata.n_obs:,} cells, normalize_total + log1p"):
+                ds.counts = await asyncio.to_thread(clustering.normalize_keeping_counts, ds.adata)
+        normalize_checkbox.disabled = ds.counts is not None
+        if ds.color_cache is not None:
+            ds.color_cache.set_normalize(normalize_checkbox.value)
         # Set first: hexagon-level clustering bins each sample separately.
         sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
