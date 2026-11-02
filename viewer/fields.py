@@ -65,7 +65,11 @@ def _classify_categorical(adata, colname: str, series: pd.Series) -> FieldSpec:
 
 
 def _classify_binned(series: pd.Series) -> FieldSpec:
-    numeric = pd.to_numeric(series, errors="coerce")
+    # Upcast to float64: pandas can't build the float16 index pd.cut needs.
+    numeric = pd.Series(
+        pd.to_numeric(series, errors="coerce").to_numpy(dtype=float, na_value=np.nan),
+        index=series.index, name=series.name,
+    )
     # Equal-count (quantile) bins, so long-tailed fields like total counts don't put
     # nearly every cell in the lowest bin. Heavily tied values (e.g. many zeros) merge
     # bins, giving fewer than N_BINS.
