@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import html
 import os
-import re
 import sys
 import traceback
 
@@ -15,13 +14,13 @@ import panel as pn
 from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
-from . import cache, clustering, figure_export, hexbin, hover, spatial_plot
+from . import clustering, figure_export, hexbin, hover, spatial_plot
 from .state import top_k_per_row
 from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY, GRAY_RGBA
-from .file_picker import ask_save_path
+from .figure_saving import figure_save_controls
 from .regions_panel import RegionsPanel
 
 
@@ -780,56 +779,30 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                           float(d["x"][0]), float(d["y"][0]), float(d["dw"][0]), float(d["dh"][0]))
         return spec
 
-    def figure_name(extension: str) -> str:
+    def figure_name() -> str:
         """Default file name: the file, the sample and what the cells are colored by."""
         if controls.mode.value == "Field":
             what = controls.field_select.value or "cells"
         else:
             what = "_".join(n for n in channel_names() if n) or "expression"
         parts = [os.path.splitext(dataset.name)[0]] + ([sample_select.value] if n_samples > 1 else []) + [what]
-        return re.sub(r"[^\w.-]+", "_", "_".join(parts)) + extension
+        return "_".join(parts)
 
     def channel_names() -> list[str]:
         is_gene = controls.expr_mode.value == "Gene"
         return [w["gene"].value.strip() if is_gene else w["pathway"].value for w in controls.channel_widgets.values()]
 
-    saved_format = cache.get_setting("figure_format", "PNG")
-    figure_format = pn.widgets.Select(
-        options=list(figure_export.FORMATS), value=saved_format if saved_format in figure_export.FORMATS else "PNG",
-        width=80, margin=(8, 5, 0, 5), description="File format of saved figures (remembered)",
-    )
-    figure_format.param.watch(lambda e: cache.set_setting("figure_format", e.new), "value")
-    save_figure_btn = pn.widgets.Button(
-        name="Save figure…", width=120, margin=(8, 10, 0, 5),
-        description="Saves exactly what the plot shows now - same view, colors, regions - as a "
-                    "figure with a legend",
-    )
-    save_figure_status = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 10),
-                                      styles={**_HINT_STYLE})
-
-    async def on_save_figure(event):
+    def prepare_figure():
         spec = figure_spec()
         if spec is None:
-            save_figure_status.object, save_figure_status.visible = "The plot hasn't been drawn yet.", True
-            return
-        fmt, extension = figure_export.FORMATS[figure_format.value]
-        path = await ask_save_path(figure_name(extension), state.busy)
-        if not path:
-            return
-        if not path.lower().endswith((extension, ".jpeg") if fmt == "jpeg" else extension):
-            path += extension
-        try:
-            async with state.busy.show("Saving the figure...", path):
-                await asyncio.to_thread(figure_export.render, spec, path, fmt)
-        except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
-            save_figure_status.object = f"<b>Couldn't save the figure:</b> {html.escape(str(exc))}"
-        else:
-            save_figure_status.object = f"Saved <code>{html.escape(path)}</code>"
-        save_figure_status.visible = True
+            return "The plot hasn't been drawn yet."
+        return (lambda path, fmt: figure_export.render(spec, path, fmt)), figure_name()
 
-    save_figure_btn.on_click(on_save_figure)
-    header_row = pn.Row(plot_header, figure_format, save_figure_btn, sizing_mode="stretch_width", margin=0)
+    save_controls, save_figure_status = figure_save_controls(
+        prepare_figure, state.busy,
+        "Saves exactly what the plot shows now - same view, colors, regions - as a figure with a legend",
+    )
+    header_row = pn.Row(plot_header, save_controls, sizing_mode="stretch_width", margin=0)
     plot_area = pn.Column(header_row, save_figure_status, bokeh_pane, sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
 

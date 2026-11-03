@@ -1,6 +1,7 @@
 """Saving the Spatial tab's current view as a publication-style matplotlib figure: the
 same cells, colors, regions and background image, cropped to exactly what the canvas
-shows, plus a legend for what the colors mean.
+shows, plus a legend for what the colors mean. The differential-expression pop-up's
+volcano plot is saved the same way (render_volcano).
 
 The Spatial tab collects what is drawn into a FigureSpec (spatial_page.figure_spec) and
 render() turns it into a file. Every figure uses the same layout (FIGURE_SHORT_SIDE,
@@ -123,6 +124,72 @@ def _draw_regions(ax, regions, halo: str):
                     textcoords="offset points", ha="center", va="bottom", color=color,
                     fontsize=FONT_SIZE, zorder=5, annotation_clip=True,
                     path_effects=[patheffects.withStroke(linewidth=3, foreground=halo)])
+
+
+@dataclass
+class VolcanoSpec:
+    """A volcano plot as shown in the DE pop-up: every gene's point, the checked genes'
+    (drawn larger, on top), the labeled genes and the axes' current ranges."""
+    x: np.ndarray  # log2 fold change
+    y: np.ndarray  # -log10 adjusted p-value
+    colors: list[str]
+    picked: tuple[np.ndarray, np.ndarray, list[str]]  # (x, y, colors) of the checked genes
+    labels: list[tuple[float, float, str]]  # (x, y, gene)
+    xlabel: str
+    ylabel: str
+    lfc_threshold: float
+    xlim: tuple[float, float] | None = None  # None: fit the points
+    ylim: tuple[float, float] | None = None
+
+
+def render_volcano(spec: VolcanoSpec, path: str, fmt: str):
+    """Draws `spec` like the DE pop-up's volcano plot, in the same layout as the spatial
+    figures (FIGURE_SHORT_SIDE, FONT_SIZE, no grid or frame - but with axes, which a
+    volcano plot needs) and saves it to `path` as `fmt`."""
+    with matplotlib.rc_context({"font.size": FONT_SIZE, "axes.grid": False}):
+        fig = Figure(figsize=(FIGURE_SHORT_SIDE, FIGURE_SHORT_SIDE), facecolor="white")
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.scatter(spec.x, spec.y, c=spec.colors, s=14, alpha=0.75, linewidths=0, zorder=2)
+        px, py, pc = spec.picked
+        if len(px):
+            ax.scatter(px, py, c=pc, s=50, edgecolors="black", linewidths=1, zorder=3)
+        for value in (spec.lfc_threshold, -spec.lfc_threshold):
+            ax.axvline(value, color="#999999", linestyle="--", linewidth=1, zorder=1)
+        if spec.xlim is not None:
+            ax.set_xlim(*spec.xlim)
+        if spec.ylim is not None:
+            ax.set_ylim(*spec.ylim)
+        # Labels on the side facing the middle of the plot, as in the pop-up - spread
+        # apart vertically (with a line back to the point) where they'd overlap.
+        for (x, y, gene), dy in zip(spec.labels, _label_offsets(ax, spec.labels)):
+            right = x > 0
+            ax.annotate(gene, (x, y), xytext=(-5 if right else 5, dy), textcoords="offset points",
+                        ha="right" if right else "left", va="center", fontsize=FONT_SIZE, color="#333333",
+                        zorder=4, annotation_clip=True,
+                        arrowprops=dict(arrowstyle="-", color="#999999", linewidth=0.8) if dy else None)
+        ax.set_xlabel(spec.xlabel, fontsize=FONT_SIZE)
+        ax.set_ylabel(spec.ylabel, fontsize=FONT_SIZE)
+        ax.tick_params(labelsize=FONT_SIZE)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        fig.savefig(path, format=fmt, dpi=DPI, bbox_inches="tight", pad_inches=0.1, facecolor="white")
+
+
+def _label_offsets(ax, labels: list[tuple[float, float, str]]) -> list[float]:
+    """Vertical offsets (points) moving each label just far enough up from its point that
+    labels on the same side (right of 0 / left of 0) don't overlap, in plot order."""
+    to_points = 72.0 / ax.figure.dpi
+    gap = FONT_SIZE * 1.15  # one line of text
+    offsets = [0.0] * len(labels)
+    for side in (True, False):
+        rows = [i for i, (x, _, _) in enumerate(labels) if (x > 0) == side]
+        heights = {i: ax.transData.transform((labels[i][0], labels[i][1]))[1] * to_points for i in rows}
+        placed = None
+        for i in sorted(rows, key=heights.get):
+            target = heights[i] if placed is None else max(heights[i], placed + gap)
+            offsets[i] = target - heights[i]
+            placed = target
+    return offsets
 
 
 def render(spec: FigureSpec, path: str, fmt: str):

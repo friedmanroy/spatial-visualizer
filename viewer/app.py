@@ -37,7 +37,7 @@ def build() -> pn.viewable.Viewable:
     pn.extension("tabulator")  # the Cell types tab's editable table needs its JS loaded up front
     state = AppState()
     state.busy = BusyOverlay()
-    state.de_dialog = DEDialog()
+    state.de_dialog = DEDialog(state.busy)
     state.celltyping = CellTypingControls(state.busy)
     state.gene_filter = GeneFilterControls()
     root = pn.Column(sizing_mode="stretch_both")

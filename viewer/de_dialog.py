@@ -15,8 +15,9 @@ import panel as pn
 from bokeh.models import ColumnDataSource, HoverTool, ScientificFormatter, TapTool
 from bokeh.plotting import figure
 
-from . import de
+from . import de, figure_export
 from .error_dialog import OVERLAY_STYLES_BASE
+from .figure_saving import figure_save_controls
 
 #: below the busy overlay's, so a long step started from here still shows on top
 _STYLES = {**OVERLAY_STYLES_BASE, "z-index": "99990", "padding": "3vh 3vw", "box-sizing": "border-box"}
@@ -36,9 +37,10 @@ _NOTE = ("Cells within one drawn region are not independent replicates, so read 
 
 
 class DEDialog:
-    def __init__(self):
+    def __init__(self, busy=None):
         # (genes) -> None: colors the tissue by these genes (set by the Spatial tab).
         self.on_color_genes = None
+        self.busy = busy  # BusyOverlay, for saving the volcano plot as a figure
         self._title = pn.pane.HTML("", sizing_mode="stretch_width", margin=(0, 5))
         close_btn = pn.widgets.Button(name="✕ Close", width=90, margin=(0, 5))
         close_btn.on_click(lambda e: self.hide())
@@ -111,7 +113,13 @@ class DEDialog:
             header_filters={"Gene": {"type": "input", "func": "like", "placeholder": "Search"},
                             "Direction": {"type": "list", "func": "=", "valuesLookup": True}},
         )
-        volcano, highlight = self._volcano(r, on_pick=lambda gene: self._color_by([gene]))
+        volcano, highlight, volcano_spec = self._volcano(r, on_pick=lambda gene: self._color_by([gene]))
+        save_controls, save_status = figure_save_controls(
+            lambda: ((lambda path, fmt, spec=volcano_spec(): figure_export.render_volcano(spec, path, fmt)),
+                     f"volcano_{r.group}_vs_{r.reference}"),
+            self.busy,
+            "Saves the volcano plot as shown now - same zoom, colors and labels - as a figure",
+        )
 
         up_btn = pn.widgets.Button(name=f"Color by top {_TOP} up", button_type="primary", margin=(5, 5))
         abs_btn = pn.widgets.Button(name=f"Color by top {_TOP} |log2 FC|", margin=(5, 5),
@@ -141,7 +149,7 @@ class DEDialog:
             callback=lambda: io.StringIO(r.labeled_table().to_csv(index=False)), filename=filename,
             label="Download CSV", button_type="light", margin=(5, 5), width=140,
         )
-        buttons = pn.Row(up_btn, abs_btn, picked_btn, download, sizing_mode="stretch_width", margin=0)
+        buttons = pn.Row(up_btn, abs_btn, picked_btn, download, save_controls, sizing_mode="stretch_width", margin=0)
         hint = pn.pane.HTML(
             "Click a point in the volcano plot to color the tissue by that gene; check genes in the "
             "table (search with the box under <i>Gene</i>) to color by them - while any are checked, "
@@ -149,15 +157,16 @@ class DEDialog:
             sizing_mode="stretch_width", margin=(0, 5), styles={"font-size": "12px", "color": "#666"},
         )
         return pn.Column(
-            summary, buttons, hint,
+            summary, buttons, save_status, hint,
             pn.Row(volcano, table, sizing_mode="stretch_both", margin=0),
             sizing_mode="stretch_both", margin=0,
         )
 
     @staticmethod
     def _volcano(r: de.DEResult, on_pick):
-        """(the volcano plot, highlight(genes)): while `genes` isn't empty, only those
-        points keep their color and get labels; the rest turn gray."""
+        """(the volcano plot, highlight(genes), spec() -> figure_export.VolcanoSpec of the
+        plot as it looks now): while `genes` isn't empty, only those points keep their
+        color and get labels; the rest turn gray."""
         t = r.table
         neg_log_p = np.minimum(-np.log10(np.maximum(t["Adj. p-value"].to_numpy(float), 1e-300)), _MAX_NEG_LOG_P)
         color = np.select([t["Direction"] == "up", t["Direction"] == "down"], [_UP, _DOWN], _NS)
@@ -208,4 +217,22 @@ class DEDialog:
                 source.selected.indices = []
 
         source.selected.on_change("indices", on_tap)
-        return pn.pane.Bokeh(fig, margin=(0, 10, 0, 0)), highlight
+
+        def current_range(rng) -> tuple[float, float] | None:
+            """The axis range as zoomed in the browser, or None (fit the points) if unknown."""
+            ends = (rng.start, rng.end)
+            if any(v is None or not np.isfinite(v) for v in ends):
+                return None
+            return float(min(ends)), float(max(ends))
+
+        def spec() -> figure_export.VolcanoSpec:
+            d, p, lab = source.data, picked_source.data, label_source.data
+            return figure_export.VolcanoSpec(
+                x=np.asarray(d["x"], dtype=float), y=np.asarray(d["y"], dtype=float), colors=list(d["color"]),
+                picked=(np.asarray(p["x"], dtype=float), np.asarray(p["y"], dtype=float), list(p["color"])),
+                labels=list(zip(map(float, lab["x"]), map(float, lab["y"]), lab["text"])),
+                xlabel=fig.xaxis[0].axis_label, ylabel=fig.yaxis[0].axis_label, lfc_threshold=de.LFC_THRESHOLD,
+                xlim=current_range(fig.x_range), ylim=current_range(fig.y_range),
+            )
+
+        return pn.pane.Bokeh(fig, margin=(0, 10, 0, 0)), highlight, spec
