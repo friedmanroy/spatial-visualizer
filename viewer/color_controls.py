@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 
 import numpy as np
+import pandas as pd
 import panel as pn
 
 from . import colors as colors_mod
@@ -27,9 +28,14 @@ _CHANNEL_NAME = {"R": "Red", "G": "Green", "B": "Blue"}
 _CHANNEL_LABEL_WIDTH = 62
 #: small gray explanatory text used under headers and for summaries
 HINT_STYLE = {"font-size": "12px", "color": "#555", "line-height": "1.35"}
+#: continuous fields are offered among the genes as "<name> (field)" - a suffix, so
+#: typing the field's name in the search box finds it
+_FIELD_SUFFIX = " (field)"
 _GENE_HINT = (
     "Each channel colors cells by one gene: brighter = higher expression. "
     "Use up to three channels; overlapping expression mixes the colors. "
+    f"Continuous fields (e.g. total counts, cell-type confidence) can go in a channel too - "
+    f"listed as <i>name{_FIELD_SUFFIX}</i>. "
     "On the Spatial tab, click a cell to show its 3 most expressed."
 )
 _PATHWAY_HINT = (
@@ -39,7 +45,7 @@ _PATHWAY_HINT = (
 _PATHWAY_PROMPT = "Choose a pathway…"
 #: how many of the most highly variable genes the gene dropdown offers
 _N_DROPDOWN_GENES = 200
-_DROPDOWN_PROMPT = f"or pick a top-{_N_DROPDOWN_GENES} variable gene"
+_DROPDOWN_PROMPT = f"or pick a continuous field / top-{_N_DROPDOWN_GENES} variable gene"
 #: left inset shared by every top-level row in the sidebar, so fields/buttons/
 #: checkboxes all start flush against the same edge instead of drifting per widget.
 _INSET = 1
@@ -244,24 +250,60 @@ class ColorControls:
             else:
                 self._rebuild_value_picker()
             pathway_names = sorted(self.get_pathways().keys())
-            gene_names = list(dataset.adata.var_names)
             for w in self.channel_widgets.values():
                 w["pathway"].options = _pathway_options(pathway_names)
-                w["gene"].options = gene_names
             self.refresh_gene_suggestions()
 
     def refresh_gene_suggestions(self):
-        """Re-fills each channel's dropdown of most variable genes - e.g. after the
-        background-gene filter (Dataset.gene_filter) changed."""
+        """Re-fills each channel's gene search options and dropdown (continuous fields,
+        then the most variable genes) - e.g. after the background-gene filter
+        (Dataset.gene_filter) changed, or a field was added."""
         dataset = self.get_dataset()
         if dataset is None:
             return
+        fields = list(self._field_channels(dataset))
+        search_options = list(dataset.adata.var_names) + fields
         dropdown_options = {_DROPDOWN_PROMPT: ""}
+        dropdown_options.update({f: f for f in fields})
         dropdown_options.update({g: g for g in dataset.top_variable_genes(_N_DROPDOWN_GENES)})
         with pn.io.hold():
             for w in self.channel_widgets.values():
+                w["gene"].options = search_options
                 w["gene_dropdown"].options = dropdown_options
                 self._sync_dropdown(w)
+
+    # -- continuous fields shown like genes ----------------------------------------
+    @staticmethod
+    def _field_channels(dataset) -> dict[str, str]:
+        """{"<name> (field)": obs column} for the continuous fields offered for coloring."""
+        return {f"{c}{_FIELD_SUFFIX}": c for c in dataset.field_options()
+                if dataset.classify(c).kind == "binned_continuous"}
+
+    @staticmethod
+    def _field_column(dataset, name: str) -> str | None:
+        """The obs column behind a "<name> (field)" channel entry, else None (a gene)."""
+        if not name.endswith(_FIELD_SUFFIX):
+            return None
+        col = name[:-len(_FIELD_SUFFIX)]
+        if col in dataset.adata.obs.columns and dataset.classify(col).kind == "binned_continuous":
+            return col
+        return None
+
+    def _channel_values(self, dataset, name: str) -> np.ndarray | None:
+        """Per-cell values of a gene channel entry: a gene's expression, or a continuous
+        field's values (NaN where missing)."""
+        col = self._field_column(dataset, name)
+        if col is None:
+            return dataset.gene_values(name)
+        return pd.to_numeric(dataset.adata.obs[col], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+
+    def _bin_channel_values(self, dataset, name: str, values: np.ndarray, idx: np.ndarray, binning, mask=None):
+        """Per-bin values of a gene channel entry: a gene as Dataset.bin_gene_values makes
+        it, a field as its cells' mean (over cells with a value, and in `mask` if given)."""
+        if self._field_column(dataset, name) is None:
+            return dataset.bin_gene_values(name, idx, binning, mask)
+        has_value = np.isfinite(values[idx])
+        return binning.mean(values[idx], has_value if mask is None else mask & has_value)
 
     def refresh_field_options(self, changed_field: str, select: bool = False):
         """Re-reads the field list after an obs column was added/recomputed (e.g. Leiden),
@@ -272,6 +314,7 @@ class ColorControls:
         with pn.io.hold():
             self._value_picker_cache.pop(changed_field, None)  # its categories may have changed
             self.field_select.options = dataset.field_options()
+            self.refresh_gene_suggestions()  # a continuous field can go in a gene channel too
             if select:
                 self.mode.value = "Field"
             if select and self.field_select.value != changed_field:
@@ -326,7 +369,9 @@ class ColorControls:
         """Mirrors the searched gene in the dropdown (or resets it to the prompt)."""
         dataset = self.get_dataset()
         gene = w["gene"].value.strip()
-        matched = dataset.match_gene(gene) if dataset is not None and gene else None
+        matched = None
+        if dataset is not None and gene:
+            matched = gene if self._field_column(dataset, gene) is not None else dataset.match_gene(gene)
         w["gene_dropdown"].value = matched if matched in w["gene_dropdown"].values else ""
 
     def _clear_channel(self, label: str):
@@ -538,7 +583,7 @@ class ColorControls:
         for label, w in self.channel_widgets.items():
             if is_gene:
                 gene = genes[label] = w["gene"].value.strip()
-                values = dataset.gene_values(gene) if gene else None
+                values = self._channel_values(dataset, gene) if gene else None
                 channels[label] = (values, False)
             else:
                 pname = w["pathway"].value
@@ -550,7 +595,7 @@ class ColorControls:
             cell_mask = None if mask is None else mask[idx]
             channels = {
                 label: (None if values is None
-                        else dataset.bin_gene_values(genes[label], idx, binning, cell_mask) if is_gene
+                        else self._bin_channel_values(dataset, genes[label], values, idx, binning, cell_mask) if is_gene
                         else binning.mean(values[idx], cell_mask), bipolar)
                 for label, (values, bipolar) in channels.items()
             }
@@ -622,14 +667,14 @@ class ColorControls:
             name = w["gene"].value.strip() if is_gene else w["pathway"].value
             values = None
             if name:
-                values = (dataset.gene_values(name) if is_gene
+                values = (self._channel_values(dataset, name) if is_gene
                           else pathways_mod.score_pathway(dataset, name, pathways))
             if values is None:
                 continue
             values = np.asarray(values, dtype=np.float32)
             if binned:
                 bin_mask = None if mask is None else take(mask)
-                values = (dataset.bin_gene_values(name, idx, binning, bin_mask) if is_gene
+                values = (self._bin_channel_values(dataset, name, values, idx, binning, bin_mask) if is_gene
                           else binning.mean(take(values), bin_mask))
             else:
                 values = take(np.where(mask, values, np.nan) if mask is not None else values)
@@ -725,7 +770,8 @@ class ColorControls:
                     idx = dataset.sample_indices(sid)
                     b = dataset.hex_binning(sid, width)
                     cell_mask = None if mask is None else mask[idx]
-                    result = (dataset.bin_gene_values(genes[label], idx, b, cell_mask) if genes is not None
+                    result = (self._bin_channel_values(dataset, genes[label], values, idx, b, cell_mask)
+                              if genes is not None
                               else b.mean(values[idx], cell_mask))
                     self._bin_values_cache.pop(key, None)
                     if len(self._bin_values_cache) >= _BIN_VALUES_CACHE_SIZE:
