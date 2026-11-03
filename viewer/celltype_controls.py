@@ -12,6 +12,15 @@ from . import celltyping
 from .color_controls import HINT_STYLE
 
 _SPECIES = {"Human": "human", "Mouse": "mouse"}
+#: what the score next to each suggestion means, per scoring method
+_SCORE_MEANING = {
+    celltyping.ULM: "Score = how strongly the type's markers stand out in that cluster (ULM).",
+    celltyping.SCTYPE: (f"Score = the type's mean ScType score per cell / hexagon (specific markers count "
+                        f"more, negative markers count against it; below {celltyping.SCTYPE_MIN_SCORE:g} "
+                        f"= Unknown)."),
+    celltyping.ORA: ("Score = -log10 adjusted p-value of the type's markers being over-represented among "
+                     "the cluster's top genes."),
+}
 
 
 
@@ -47,6 +56,13 @@ class CellTypingControls:
             sizing_mode="stretch_width",
             description="Your own and edited marker sets are managed on the Cell types tab.",
         )
+        self.method = pn.widgets.Select(
+            name="Scoring method", options=celltyping.METHODS, value=celltyping.ULM, sizing_mode="stretch_width",
+            description="ULM: marker sets vs each cluster's average profile. ScType: per-cell scores, "
+                        "weighting markers by how specific they are and subtracting negative markers "
+                        "(set on the Cell types tab). Top-gene overlap: finds each cluster's own top "
+                        "genes first, then which marker set they overlap most.",
+        )
         self.include_common = pn.widgets.Checkbox(
             name="Also consider immune, blood, vessel and connective-tissue cells",
             value=True, visible=False, margin=(4, 5, 4, 5),
@@ -56,7 +72,8 @@ class CellTypingControls:
         )
         self._options = pn.Column(
             pn.Row(self.species, self.tissue, sizing_mode="stretch_width", margin=0),
-            self.species_info, self.include_common, self.source, sizing_mode="stretch_width", margin=(0, 0, 0, 20),
+            self.species_info, self.include_common, self.source, self.method,
+            sizing_mode="stretch_width", margin=(0, 0, 0, 20),
         )
         self.enabled.param.watch(lambda e: setattr(self._options, "visible", e.new), "value")
         self.layout = pn.Column(self.enabled, self.hint, self._options, sizing_mode="stretch_width", margin=0)
@@ -73,7 +90,8 @@ class CellTypingControls:
     @property
     def settings_label(self) -> str:
         source = {v: k for k, v in celltyping.MARKER_SOURCES.items()}[self.source.value]
-        return f"{self.tissue.value}, {self.species.value} markers ({source})"
+        method = {v: k for k, v in celltyping.METHODS.items()}[self.method.value].split(" (")[0]
+        return f"{self.tissue.value}, {self.species.value} markers ({source}), {method}"
 
     def _set_markers(self, markers):
         self._markers = markers
@@ -118,6 +136,7 @@ class CellTypingControls:
             result = await asyncio.to_thread(
                 celltyping.annotate_clusters, dataset, cluster_col, net,
                 species, self.settings_label, report=self.busy.step, gene_filter=gene_filter,
+                method=self.method.value,
             )
         dataset.celltype_results[result.column] = result
         return result
@@ -156,8 +175,8 @@ def results_html(result: celltyping.CellTypingResult) -> str:
         f"{result.n_types_scored} cell types scored"
         + (f", typed on the clustering's hexagons ({result.hex_width:g} cell spacings wide)" if hexes else "")
         + (f", {html.escape(result.background)}" if result.background and result.background != "all genes" else "")
-        + ". Score = how strongly the "
-        f"type's markers stand out in that cluster; gray lines are its strongest markers there and the next-best types. "
+        + ". " + _SCORE_MEANING[result.method] + " Gray lines are the type's strongest markers there "
+        "and the next-best types. "
         f"Confidence = the cluster's mean per-{unit} confidence (also shown when hovering a "
         f"{hovered}, and as the field <code>{html.escape(result.confidence_column)}</code>).</div>"
         "<div style='max-height:260px;overflow-y:auto'>"

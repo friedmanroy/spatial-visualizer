@@ -23,7 +23,7 @@ from .pathways_page import parse_genes
 
 #: prefix for marker sets added as pathways ("Show as pathway")
 PATHWAY_PREFIX = "Cell type: "
-_COLUMNS = ["On", "Cell type", "Markers", "Measured", "Not measured", "Source"]
+_COLUMNS = ["On", "Cell type", "Markers", "Negative markers", "Measured", "Not measured", "Source"]
 
 
 def build_markers_page(state) -> pn.viewable.Viewable:
@@ -43,10 +43,12 @@ def build_markers_page(state) -> pn.viewable.Viewable:
                         "Markers": {"type": "input", "func": "like", "placeholder": "search"},
                         "Source": {"type": "input", "func": "like", "placeholder": "filter"}},
         editors={"On": {"type": "tickCross"}, "Cell type": None, "Markers": {"type": "textarea"},
+                 "Negative markers": {"type": "textarea"},
                  "Measured": None, "Not measured": None, "Source": None},
         formatters={"On": {"type": "tickCross"}, "Not measured": {"type": "html"},
-                    "Markers": {"type": "textarea"}},
-        widths={"On": 60, "Cell type": 190, "Measured": 100, "Not measured": 200, "Source": 150},
+                    "Markers": {"type": "textarea"}, "Negative markers": {"type": "textarea"}},
+        widths={"On": 60, "Cell type": 190, "Negative markers": 150, "Measured": 100, "Not measured": 200,
+                "Source": 150},
         text_align={"Measured": "right"},
     )
 
@@ -74,6 +76,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
             rows[m.name] = m
             measured, missing = measured_info(m.genes)
             records.append({"On": m.enabled, "Cell type": m.name, "Markers": ", ".join(m.genes),
+                            "Negative markers": ", ".join(m.negative),
                             "Measured": measured, "Not measured": missing, "Source": m.origin})
         table.value = pd.DataFrame(records, columns=_COLUMNS)
         table.selection = []
@@ -98,18 +101,31 @@ def build_markers_page(state) -> pn.viewable.Viewable:
                 say("<b>A marker set needs at least one gene</b> - switch it off instead to leave it out.")
                 refresh()
                 return
-            if m.panglao_genes is not None and [g.upper() for g in genes] == [g.upper() for g in m.panglao_genes]:
-                custom["types"].pop(name, None)  # back to PanglaoDB's own list
-            else:
-                custom["types"][name] = {"genes": genes, "edited_from_panglao": m.panglao_genes is not None}
+            set_custom(custom, m, genes, m.negative)
             measured, _ = measured_info(genes)
             say(f"Updated <b>{html.escape(name)}</b>: {len(genes)} genes ({measured} measured in this data).")
+        elif event.column == "Negative markers":
+            negative = parse_genes(str(event.value))
+            set_custom(custom, m, m.genes, negative)
+            say(f"Updated <b>{html.escape(name)}</b>'s negative markers: "
+                + (", ".join(html.escape(g) for g in negative) if negative else "none")
+                + ". They're used by the ScType and ULM scoring methods.")
         else:
             return
         celltyping.save_custom_markers(custom)
         refresh()
 
     table.on_edit(on_edit)
+
+    def set_custom(custom: dict, m: celltyping.MarkerSet, genes: list[str], negative: list[str]):
+        """Stores `m`'s edited markers - or drops the edit when it's back to PanglaoDB's own."""
+        unchanged = (m.panglao_genes is not None and not negative
+                     and [g.upper() for g in genes] == [g.upper() for g in m.panglao_genes])
+        if unchanged:
+            custom["types"].pop(m.name, None)
+        else:
+            custom["types"][m.name] = {"genes": genes, "negative": negative,
+                                       "edited_from_panglao": m.panglao_genes is not None}
 
     def selected() -> list[celltyping.MarkerSet]:
         names = [table.value.iloc[i]["Cell type"] for i in table.selection]
@@ -176,6 +192,10 @@ def build_markers_page(state) -> pn.viewable.Viewable:
     genes_input = pn.widgets.TextAreaInput(name="Marker genes (separated by commas or new lines)",
                                            placeholder="CD68, CD163\nMRC1\nAPOE", height=110,
                                            sizing_mode="stretch_width")
+    negative_input = pn.widgets.TextAreaInput(
+        name="Negative markers (optional): genes this type should not express",
+        placeholder="CD3E, MS4A1", height=60, sizing_mode="stretch_width",
+    )
     add_btn = pn.widgets.Button(name="Add cell type", button_type="primary", width=140)
 
     def on_add(event):
@@ -187,7 +207,8 @@ def build_markers_page(state) -> pn.viewable.Viewable:
         custom = celltyping.load_custom_markers()
         existing = rows.get(name)
         panglao = existing.panglao_genes if existing is not None else None
-        custom["types"][name] = {"genes": genes, "edited_from_panglao": panglao is not None}
+        custom["types"][name] = {"genes": genes, "negative": parse_genes(negative_input.value),
+                                 "edited_from_panglao": panglao is not None}
         custom["disabled"] = [n for n in custom["disabled"] if n != name]
         celltyping.save_custom_markers(custom)
         measured, _ = measured_info(genes)
@@ -198,7 +219,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
         say(f"{verb} <b>{html.escape(name)}</b>: {len(genes)} genes ({measured} measured in this data).{warn}"
             + ("" if typing.source.value != "panglao" else
                " Note: the Leiden panel is set to <i>PanglaoDB only</i>, so your sets aren't used until you change it."))
-        name_input.value = genes_input.value = ""
+        name_input.value = genes_input.value = negative_input.value = ""
         refresh()
 
     add_btn.on_click(on_add)
@@ -239,7 +260,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
         refresh()
 
     download_btn.on_click(on_download)
-    for widget in (typing.species, typing.tissue, typing.include_common, typing.source):
+    for widget in (typing.species, typing.tissue, typing.include_common, typing.source, typing.method):
         widget.param.watch(refresh, "value")
     typing.tissue.param.watch(refresh, "options")  # filled in once PanglaoDB is downloaded
     refresh()
@@ -253,6 +274,8 @@ def build_markers_page(state) -> pn.viewable.Viewable:
             "double-clicking it, <b>untick On</b> to leave a type out, or tick rows on the left to reset, "
             f"delete or view them as a pathway. Types need at least {celltyping.MIN_MARKERS} of their "
             "markers measured in this data to be scored (⚠ = fewer); unmeasured markers are listed in gray. "
+            "<b>Negative markers</b> (genes a type should <i>not</i> express, e.g. CD3E for B cells) count "
+            "against it with the ScType and ULM methods; PanglaoDB has none, so add your own. "
             f"Your changes are saved on this computer (<code>{html.escape(celltyping.CUSTOM_MARKERS_PATH)}</code>) "
             "and used for every dataset."
         ),
@@ -266,6 +289,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
         hint("Using the name of an existing type replaces its markers."),
         name_input,
         genes_input,
+        negative_input,
         add_btn,
         pn.layout.Divider(),
         "### Re-run cell typing",
