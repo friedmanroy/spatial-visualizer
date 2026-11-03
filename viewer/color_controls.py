@@ -520,6 +520,10 @@ class ColorControls:
                         f"<b>{html.escape(field)}</b> categories")
         return summary
 
+    def active_labels(self) -> set:
+        """The current field's selected categories (value ranges)."""
+        return self._active_labels()
+
     def _active_labels(self) -> set:
         if self._multi is not None:
             return set(self._multi.value) or set(self._multi.options)

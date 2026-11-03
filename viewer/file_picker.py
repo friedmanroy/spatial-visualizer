@@ -46,12 +46,44 @@ root.destroy()
 sys.stdout.write(path or "")
 """
 
+# Save dialog fallback for non-macOS, like _TK_SCRIPT.
+_TK_SAVE_SCRIPT = r"""
+import sys
+import tkinter as tk
+from tkinter import filedialog
+
+extension, label, initial_name, initial_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+root.update()
+path = filedialog.asksaveasfilename(
+    title="Save figure as",
+    initialdir=initial_dir or None,
+    initialfile=initial_name,
+    defaultextension=extension,
+    filetypes=[(f"{label} files", f"*{extension}"), ("All files", "*.*")],
+)
+root.destroy()
+sys.stdout.write(path or "")
+"""
+
 # `activate` brings osascript itself to the front so the dialog isn't hidden behind the browser.
 # The start folder comes in as an argument (not pasted into the script), so no quoting issues.
 _OSASCRIPT = 'activate\nPOSIX path of (choose file with prompt "Select a file")'
 _OSASCRIPT_IN_DIR = """on run argv
 activate
 POSIX path of (choose file with prompt "Select a file" default location (POSIX file (item 1 of argv)))
+end run"""
+
+
+_OSASCRIPT_SAVE = """on run argv
+activate
+POSIX path of (choose file name with prompt "Save figure as" default name (item 1 of argv))
+end run"""
+_OSASCRIPT_SAVE_IN_DIR = """on run argv
+activate
+POSIX path of (choose file name with prompt "Save figure as" default name (item 1 of argv) default location (POSIX file (item 2 of argv)))
 end run"""
 
 
@@ -77,6 +109,41 @@ def _pick_file_blocking(file_pattern: str, start_dir: str | None) -> str | None:
             print(f"File dialog failed: {result.stderr.strip()}", file=sys.stderr)
         return None
     return result.stdout.strip() or None
+
+
+def _save_path_blocking(default_name: str, start_dir: str | None) -> str | None:
+    if sys.platform == "darwin":
+        script = _OSASCRIPT_SAVE_IN_DIR if start_dir else _OSASCRIPT_SAVE
+        cmd = ["osascript", "-e", script, default_name] + ([start_dir] if start_dir else [])
+    else:
+        extension = os.path.splitext(default_name)[1]
+        cmd = [sys.executable, "-c", _TK_SAVE_SCRIPT, extension, extension.lstrip(".").upper(),
+               default_name, start_dir or ""]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        if "-128" not in result.stderr:  # -128: the user cancelled
+            print(f"Save dialog failed: {result.stderr.strip()}", file=sys.stderr)
+        return None
+    return result.stdout.strip() or None
+
+
+async def ask_save_path(default_name: str, busy=None) -> str | None:
+    """Asks where to save a file with the OS's own save dialog (in its own process, like
+    the file picker), starting in the folder last saved to; None if cancelled."""
+    start_dir = cache.get_setting("last_save_directory")
+    if start_dir and not os.path.isdir(start_dir):
+        start_dir = None
+    async with (busy.show(
+        "Waiting for you to choose where to save...",
+        "The save dialog is a separate window - if you don't see it, it may be behind the browser.",
+    ) if busy is not None else contextlib.nullcontext()):
+        path = await asyncio.to_thread(_save_path_blocking, default_name, start_dir)
+    if path:
+        try:
+            cache.set_setting("last_save_directory", os.path.dirname(os.path.abspath(path)))
+        except OSError:
+            traceback.print_exc(file=sys.stderr)
+    return path
 
 
 def remember_folder_of(path: str):

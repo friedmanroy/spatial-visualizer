@@ -4,20 +4,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import os
+import re
 import sys
 import traceback
 
 import numpy as np
+import pandas as pd
 import panel as pn
 from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
-from . import clustering, hexbin, hover, spatial_plot
+from . import cache, clustering, figure_export, hexbin, hover, spatial_plot
 from .state import top_k_per_row
 from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
-from .colors import GRAY_RGBA
+from .colors import GRAY, GRAY_RGBA
+from .file_picker import ask_save_path
 from .regions_panel import RegionsPanel
 
 
@@ -709,7 +713,110 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         sizing_mode="stretch_height",
         scroll=True,
     )
-    plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
+    # -- saving the view as a figure (figure_export) -----------------------------------
+    def figure_spec() -> figure_export.FigureSpec | None:
+        """What the canvas shows right now: the markers in view (bins and zoomed-in
+        cells, as drawn), the legend for their colors, the regions and the image."""
+        box = view_box()
+        if box is None:
+            return None
+        x0, x1, y0, y1 = box
+        layers, codes = [], []
+        for group, src, drawn in ((renderers, source, hidden_bins.booleans), (detail_renderers, detail_source, None)):
+            shape = next((name for name, r in group.items() if r.visible), None)
+            data = src.data
+            if shape is None or not len(data["x"]):
+                continue
+            x, y = np.asarray(data["x"], dtype=float), np.asarray(data["y"], dtype=float)
+            glyph = group[shape].glyph
+            props = {p: getattr(glyph, p) for p in ("radius", "angle", "width", "height") if hasattr(glyph, p)}
+            reach = max(float(v or 0) for p, v in props.items() if p != "angle")
+            keep = (x >= x0 - reach) & (x <= x1 + reach) & (y >= y0 - reach) & (y <= y1 + reach)
+            if drawn is not None and len(drawn) == len(x):  # bins hidden under zoomed-in cells
+                keep &= np.asarray(drawn, dtype=bool)
+            layers.append(figure_export.Layer(x[keep], y[keep], np.asarray(data["fill_color"])[keep], shape, props))
+            codes.append(np.asarray(data["hv_code"])[keep])
+        spec = figure_export.FigureSpec(box, layers, alpha=cell_opacity.value,
+                                        expression=controls.mode.value != "Field")
+        if spec.expression:
+            is_gene = controls.expr_mode.value == "Gene"
+            spec.channels = {label: (w["gene"].value.strip() if is_gene else w["pathway"].value)
+                             for label, w in controls.channel_widgets.items()}
+        elif controls.field_select.value:
+            field = controls.field_select.value
+            fs = dataset.classify(field)
+            if fs.kind == "categorical":  # the selected categories that are in view
+                shown = np.unique(np.concatenate(codes)) if codes else []
+                active = controls.active_labels()
+                spec.legend = [(fs.categories[c], fs.colors.get(fs.categories[c], GRAY))
+                               for c in shown if c >= 0 and fs.categories[c] in active]
+            else:
+                values = pd.to_numeric(dataset.adata.obs[field], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+                bounds = [float(np.nanmin(values))] + [float(b) for b in fs.bin_edges]
+                if bounds[0] >= bounds[1]:
+                    bounds[0] = bounds[1] - abs(bounds[1]) * 1e-6 - 1e-12
+                spec.colorbar = (field, [fs.colors.get(c, GRAY) for c in fs.categories], bounds)
+        if regions_panel.show_outlines.value:
+            spec.regions = [(r.name, r.color, r.polygons)
+                            for r in regions_panel.regions.in_sample(sample_select.value) if r.polygons]
+        if len(bg_source.data["image"]):
+            img = np.ascontiguousarray(bg_source.data["image"][0])
+            d = bg_source.data
+            spec.image = (img.view(np.uint8).reshape(*img.shape, 4),
+                          float(d["x"][0]), float(d["y"][0]), float(d["dw"][0]), float(d["dh"][0]))
+        return spec
+
+    def figure_name(extension: str) -> str:
+        """Default file name: the file, the sample and what the cells are colored by."""
+        if controls.mode.value == "Field":
+            what = controls.field_select.value or "cells"
+        else:
+            what = "_".join(n for n in channel_names() if n) or "expression"
+        parts = [os.path.splitext(dataset.name)[0]] + ([sample_select.value] if n_samples > 1 else []) + [what]
+        return re.sub(r"[^\w.-]+", "_", "_".join(parts)) + extension
+
+    def channel_names() -> list[str]:
+        is_gene = controls.expr_mode.value == "Gene"
+        return [w["gene"].value.strip() if is_gene else w["pathway"].value for w in controls.channel_widgets.values()]
+
+    saved_format = cache.get_setting("figure_format", "PNG")
+    figure_format = pn.widgets.Select(
+        options=list(figure_export.FORMATS), value=saved_format if saved_format in figure_export.FORMATS else "PNG",
+        width=80, margin=(8, 5, 0, 5), description="File format of saved figures (remembered)",
+    )
+    figure_format.param.watch(lambda e: cache.set_setting("figure_format", e.new), "value")
+    save_figure_btn = pn.widgets.Button(
+        name="Save figure…", width=120, margin=(8, 10, 0, 5),
+        description="Saves exactly what the plot shows now - same view, colors, regions - as a "
+                    "figure with a legend",
+    )
+    save_figure_status = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 10),
+                                      styles={**_HINT_STYLE})
+
+    async def on_save_figure(event):
+        spec = figure_spec()
+        if spec is None:
+            save_figure_status.object, save_figure_status.visible = "The plot hasn't been drawn yet.", True
+            return
+        fmt, extension = figure_export.FORMATS[figure_format.value]
+        path = await ask_save_path(figure_name(extension), state.busy)
+        if not path:
+            return
+        if not path.lower().endswith((extension, ".jpeg") if fmt == "jpeg" else extension):
+            path += extension
+        try:
+            async with state.busy.show("Saving the figure...", path):
+                await asyncio.to_thread(figure_export.render, spec, path, fmt)
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            save_figure_status.object = f"<b>Couldn't save the figure:</b> {html.escape(str(exc))}"
+        else:
+            save_figure_status.object = f"Saved <code>{html.escape(path)}</code>"
+        save_figure_status.visible = True
+
+    save_figure_btn.on_click(on_save_figure)
+    header_row = pn.Row(plot_header, figure_format, save_figure_btn, sizing_mode="stretch_width", margin=0)
+    plot_area = pn.Column(header_row, save_figure_status, bokeh_pane, sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
 
 

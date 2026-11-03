@@ -109,6 +109,17 @@ def _load_settings() -> dict:
         return {}
 
 
+def get_setting(key: str, default=None):
+    """An app-wide setting saved with set_setting (any session), or `default`."""
+    return _load_settings().get(key, default)
+
+
+def set_setting(key: str, value):
+    settings = _load_settings()
+    settings[key] = value
+    write_json_atomic(_SETTINGS_PATH, settings)
+
+
 def get_last_directory() -> str | None:
     """Folder the file picker last chose a file in (any session), if it still exists."""
     path = _load_settings().get("last_directory")
@@ -116,6 +127,4 @@ def get_last_directory() -> str | None:
 
 
 def set_last_directory(path: str):
-    settings = _load_settings()
-    settings["last_directory"] = path
-    write_json_atomic(_SETTINGS_PATH, settings)
+    set_setting("last_directory", path)
