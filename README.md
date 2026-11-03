@@ -24,7 +24,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
   clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
   scores), or their most common selected category. Zoom in until at most
-  50,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
+  200,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
   by default), colored per cell by expression; clusters and cell types computed on the
   hexagons color each cell like its hexagon.
 - **Top genes in view** - the header above the plot lists the 4 most expressed genes among

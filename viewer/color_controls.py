@@ -74,7 +74,7 @@ def _pathway_options(names: list[str]) -> dict[str, str]:
 
 
 class ColorControls:
-    def __init__(self, get_dataset, get_pathways, on_change, get_active_indices=None):
+    def __init__(self, get_dataset, get_pathways, on_change, get_active_indices=None, get_hex_width=None):
         self.get_dataset = get_dataset  # () -> Dataset | None
         self.get_pathways = get_pathways  # () -> dict
         self.on_change = on_change  # () -> None
@@ -82,6 +82,9 @@ class ColorControls:
         # cells currently on screen (e.g. the active sample). None means "no subset,
         # everything shown" - skips the local-vs-global histogram overlay.
         self.get_active_indices = get_active_indices or (lambda: None)
+        # () -> width (in cell spacings) of the hexagons drawn, or None: with hexagons
+        # drawn, the histograms show the hexagons' values, as colored.
+        self.get_hex_width = get_hex_width or (lambda: None)
 
         # Outline style: the active choice is filled, the others white - so which mode
         # is on can be read at a glance (two shades of blue were hard to tell apart).
@@ -480,7 +483,6 @@ class ColorControls:
                 channels[label] = (values, True)
             channel_values[label] = values
         self._update_pathway_info(pathways, is_gene)
-        self._update_histograms(channel_values, mask)
         if binning is not None:
             cell_mask = None if mask is None else mask[idx]
             channels = {
@@ -492,8 +494,10 @@ class ColorControls:
             # Bins without any cell of a selected category have no mean (NaN).
             shown = None if cell_mask is None else np.bincount(
                 binning.cell_bin, weights=cell_mask, minlength=binning.n_bins) > 0
+            self._update_bin_histograms(channel_values, channels, genes if is_gene else None, binning, mask)
         else:
             shown = mask
+            self._update_histograms(channel_values, mask)
         if shown is None:
             return colors_mod.compute_rgb_colors(n, channels)
         # Scale colors over the shown cells/bins only, so the contrast reflects them.
@@ -614,25 +618,63 @@ class ColorControls:
         if mask is not None:  # only the cells actually colored count as "shown"
             active_idx = np.flatnonzero(mask) if active_idx is None else active_idx[mask[active_idx]]
         for label, values in channel_values.items():
-            hist_pane = self.channel_widgets[label]["hist"]
             if values is None:
-                hist_pane.object = ""
-                hist_pane.visible = False
+                self._show_histogram(label, None, None, "")
                 continue
             local_values = values[active_idx] if active_idx is not None else values
-            color = _CHANNEL_LABEL_COLOR[label]
             # Says what the two overlaid distributions are, right under the plot.
             if active_idx is not None:
                 shown = "colored cells" if mask is not None else "this sample"
-                caption = (f'<span style="color:{color}">■</span> {shown} &nbsp; '
-                           f'<span style="color:#9e9e9e">■</span> all cells')
+                self._show_histogram(label, local_values, values, shown, "all cells")
             else:
-                caption = "distribution across all cells"
-            hist_pane.object = (
-                histogram_mod.render_histogram(local_values, values, color)
-                + f'<div style="font-size:11px;color:#555;margin:-2px 0 2px 0">{caption}</div>'
-            )
-            hist_pane.visible = True
+                self._show_histogram(label, local_values, values, "distribution across all cells")
+
+    def _update_bin_histograms(self, channel_values, bin_channels, genes, binning, mask=None):
+        """Histograms of the hexagons' values, as colored: this sample's drawn bins over
+        every sample's bins of the same width (each made like the drawn ones)."""
+        dataset = self.get_dataset()
+        width = self.get_hex_width()
+        others = [sid for sid in dataset.sample_ids
+                  if width is not None and dataset.hex_binning(sid, width) is not binning]
+        for label, values in channel_values.items():
+            bin_values = bin_channels[label][0]
+            if values is None or bin_values is None:
+                self._show_histogram(label, None, None, "")
+                continue
+            local = bin_values[np.isfinite(bin_values)]  # NaN: no cell of a selected category
+            if not others:
+                what = "colored hexagons" if mask is not None else "hexagons"
+                self._show_histogram(label, local, None, f"distribution across {what}")
+                continue
+            parts = [local]
+            for sid in others:
+                idx = dataset.sample_indices(sid)
+                b = dataset.hex_binning(sid, width)
+                cell_mask = None if mask is None else mask[idx]
+                parts.append(dataset.bin_gene_values(genes[label], idx, b, cell_mask) if genes is not None
+                             else b.mean(values[idx], cell_mask))
+            everything = np.concatenate(parts)
+            shown = "colored hexagons" if mask is not None else "this sample's hexagons"
+            self._show_histogram(label, local, everything[np.isfinite(everything)], shown,
+                                 "all samples' hexagons")
+
+    def _show_histogram(self, label: str, local_values, global_values, shown: str, overall: str | None = None):
+        """Draws a channel's histogram (hidden if `local_values` is None), captioned with
+        what `local_values` are and, when overlaid, what `global_values` are."""
+        hist_pane = self.channel_widgets[label]["hist"]
+        if local_values is None:
+            hist_pane.object = ""
+            hist_pane.visible = False
+            return
+        color = _CHANNEL_LABEL_COLOR[label]
+        caption = (shown if overall is None else
+                   f'<span style="color:{color}">■</span> {shown} &nbsp; '
+                   f'<span style="color:#9e9e9e">■</span> {overall}')
+        hist_pane.object = (
+            histogram_mod.render_histogram(local_values, global_values, color)
+            + f'<div style="font-size:11px;color:#555;margin:-2px 0 2px 0">{caption}</div>'
+        )
+        hist_pane.visible = True
 
     def _update_pathway_info(self, pathways, is_gene: bool):
         for label, w in self.channel_widgets.items():

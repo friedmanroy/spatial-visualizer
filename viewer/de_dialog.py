@@ -100,8 +100,10 @@ class DEDialog:
                if r.log1p_applied else ""),
             sizing_mode="stretch_width", margin=(4, 5), styles={"font-size": "13px"},
         )
+        labeled = r.labeled_table()
+        pct_cols = [c for c in labeled.columns if c.startswith("% ")]
         table = pn.widgets.Tabulator(
-            t[["Gene", "log2 FC", "Adj. p-value", "% in group", "% in reference", "Direction"]],
+            labeled[["Gene", "log2 FC", "Adj. p-value", *pct_cols, "Direction"]],
             show_index=False, disabled=True, selectable="checkbox", pagination="local", page_size=14,
             sizing_mode="stretch_both", min_height=300, layout="fit_data_stretch",
             formatters={"log2 FC": {"type": "money", "precision": 2},
@@ -112,13 +114,15 @@ class DEDialog:
         volcano = self._volcano(r, on_pick=lambda gene: self._color_by([gene]))
 
         up_btn = pn.widgets.Button(name=f"Color by top {_TOP} up", button_type="primary", margin=(5, 5))
-        down_btn = pn.widgets.Button(name=f"Color by top {_TOP} down", margin=(5, 5))
+        abs_btn = pn.widgets.Button(name=f"Color by top {_TOP} |log2 FC|", margin=(5, 5),
+                                    description=f"The significant genes changed most, up or down, among those in at least "
+                                                f"{de.MIN_PCT_TOP}% of the side they're higher in")
         picked_btn = pn.widgets.Button(name="Color by checked genes", margin=(5, 5), disabled=True,
                                        description=f"Check up to {_TOP} genes in the table")
         up_btn.disabled = n_up == 0
-        down_btn.disabled = n_down == 0
+        abs_btn.disabled = n_up + n_down == 0
         up_btn.on_click(lambda e: self._color_by(r.top("up", _TOP)))
-        down_btn.on_click(lambda e: self._color_by(r.top("down", _TOP)))
+        abs_btn.on_click(lambda e: self._color_by(r.top_abs(_TOP)))
 
         def picked() -> list[str]:
             return [table.value["Gene"].iloc[i] for i in table.selection]
@@ -133,10 +137,10 @@ class DEDialog:
         picked_btn.on_click(lambda e: self._color_by(picked()))
         filename = re.sub(r"[^\w.-]+", "_", f"DE_{r.group}_vs_{r.reference}") + ".csv"
         download = pn.widgets.FileDownload(
-            callback=lambda: io.StringIO(r.table.to_csv(index=False)), filename=filename,
+            callback=lambda: io.StringIO(r.labeled_table().to_csv(index=False)), filename=filename,
             label="Download CSV", button_type="light", margin=(5, 5), width=140,
         )
-        buttons = pn.Row(up_btn, down_btn, picked_btn, download, sizing_mode="stretch_width", margin=0)
+        buttons = pn.Row(up_btn, abs_btn, picked_btn, download, sizing_mode="stretch_width", margin=0)
         hint = pn.pane.HTML(
             "Click a point in the volcano plot to color the tissue by that gene; check genes in the "
             "table (search with the box under <i>Gene</i>) to color by them.",

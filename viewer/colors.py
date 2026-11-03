@@ -128,8 +128,10 @@ def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool
 
     ``channels`` maps a channel label to (values, bipolar). ``values`` is a length-n
     array or None (channel unused). If ``bipolar`` the values are scaled symmetrically
-    around zero (e.g. pathway scores); otherwise linearly between their 1st/99th
-    percentiles (e.g. raw gene expression).
+    around zero (e.g. pathway scores); otherwise linearly from their 1st percentile up
+    to the 99th percentile of the values above it (e.g. gene expression) - so a gene
+    expressed in under 1% of the cells still shows, instead of its 1st and 99th
+    percentiles both being 0.
     """
     rgb = np.zeros((n, 3))
     for label, (values, bipolar) in channels.items():
@@ -144,7 +146,9 @@ def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool
             neg = np.clip(-t, 0, 1)
             rgb += pos[:, None] * primary[None, :] + neg[:, None] * complement[None, :]
         else:
-            vmin, vmax = np.percentile(values, 1), np.percentile(values, 99)
+            vmin = np.percentile(values, 1)
+            above = values[values > vmin]
+            vmax = np.percentile(above, 99) if above.size else vmin
             if vmax > vmin:
                 t = np.clip((values - vmin) / (vmax - vmin), 0, 1)
             else:

@@ -452,6 +452,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     controls = ColorControls(
         get_dataset, get_pathways, on_change=recolor_only, get_active_indices=get_active_indices,
+        get_hex_width=lambda: bin_width.value if bin_toggle.value else None,
     )
 
     def color_by_genes(genes: list[str]):
@@ -722,7 +723,7 @@ N_TOP_GENES = 4
 #: the header's most-expressed genes are averaged over at most this many cells in view
 TOP_GENES_MAX_CELLS = 50_000
 #: default for how few cells must be in view for hex-binned samples to show them individually
-DETAIL_MAX_CELLS = 50_000
+DETAIL_MAX_CELLS = 200_000
 #: individual cells are fetched for the view plus this fraction of its size on each side
 DETAIL_MARGIN = 0.25
 #: the view must stay still this long (ms) before the individual cells are fetched

@@ -42,6 +42,9 @@ LOG1P_MAX = 30
 #: a gene counts as up / down in the volcano plot and summaries past these
 LFC_THRESHOLD = 0.5
 PADJ_THRESHOLD = 0.05
+#: top_abs only picks genes detected in at least this % of the side they're higher in:
+#: the largest fold changes otherwise go to genes barely detected anywhere
+MIN_PCT_TOP = 10
 
 #: result columns, as shown in the results table
 COLUMNS = {
@@ -69,10 +72,34 @@ class DEResult:
     def title(self) -> str:
         return f"{self.group} vs {self.reference}"
 
+    def labeled_table(self) -> pd.DataFrame:
+        """The table with its "% in group" / "% in reference" columns named after where
+        each side's cells came from (e.g. "% in Region 12", "% not in Region 12"), as
+        shown and exported."""
+        return self.table.rename(columns={"% in group": f"% in {self.group}",
+                                          "% in reference": self._reference_pct_label()})
+
+    def _reference_pct_label(self) -> str:
+        # The reference labels come from comparisons().
+        if self.reference.startswith("the rest of"):
+            return f"% not in {self.group}"
+        if self.reference == "all other regions":
+            return "% in other regions"
+        return f"% in {self.reference}"
+
     def top(self, direction: str, k: int) -> list[str]:
         """The k genes most strongly up (or down) in the group, among significant ones."""
         t = self.table[self.table["Direction"] == direction]
         t = t.sort_values("log2 FC", ascending=direction == "down")
+        return t["Gene"].head(k).tolist()
+
+    def top_abs(self, k: int) -> list[str]:
+        """The k genes with the largest |log2 FC|, up or down, among significant ones
+        detected in at least MIN_PCT_TOP % of the side they're higher in."""
+        t = self.table
+        pct_high = np.where(t["Direction"] == "up", t["% in group"], t["% in reference"])
+        t = t[(t["Direction"] != "") & (pct_high >= MIN_PCT_TOP)]
+        t = t.reindex(t["log2 FC"].abs().sort_values(ascending=False).index)
         return t["Gene"].head(k).tolist()
 
 
