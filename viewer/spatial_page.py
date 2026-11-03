@@ -168,7 +168,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bg_images = spatial_plot.find_background_images(dataset.adata)
     bg_source = ColumnDataSource(data={"image": [], "x": [], "y": [], "dw": [], "dh": []})
     fig.image_rgba(image="image", x="x", y="y", dw="dw", dh="dh", source=bg_source, level="image")
-    bg_data_cache: dict[tuple[str, str], dict] = {}
+    bg_data_cache: dict[tuple[str, str, str], tuple[dict, bool]] = {}
     bg_select = pn.widgets.Select(
         name="Background image" if bg_images else "Background image (none found in uns['spatial'])",
         options=["None"] + list(bg_images), value="None", disabled=not bg_images,
@@ -179,18 +179,27 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         value="As stored", visible=False, sizing_mode="stretch_width",
         description="Change this if the image doesn't line up with the cells.",
     )
+    bg_fit_hint = pn.pane.HTML(
+        "This image didn't land anywhere near the cells, so it was moved and stretched "
+        "to match their center and spread. Its placement is approximate.",
+        styles=_HINT_STYLE, margin=(0, 5, 2, 5), sizing_mode="stretch_width", visible=False,
+    )
 
     def update_bg_image(*events):
         label = bg_select.value
         bg_orientation.visible = label in bg_images
         if label not in bg_images:
             bg_source.data = {"image": [], "x": [], "y": [], "dw": [], "dh": []}
+            bg_fit_hint.visible = False
             return
-        key = (label, bg_orientation.value)
+        sample = sample_select.value
+        key = (label, bg_orientation.value, sample)
         if key not in bg_data_cache:
             img, scalef = bg_images[label]
-            bg_data_cache[key] = spatial_plot.background_image_data(img, scalef, bg_orientation.value)
-        bg_source.data = bg_data_cache[key]
+            bg_data_cache[key] = spatial_plot.background_image_data(
+                img, scalef, bg_orientation.value, coords=get_geometry(sample)[1],
+            )
+        bg_source.data, bg_fit_hint.visible = bg_data_cache[key]
 
     bg_select.param.watch(update_bg_image, "value")
     bg_orientation.param.watch(update_bg_image, "value")
@@ -627,7 +636,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_card.param.watch(on_leiden_card_toggle, "collapsed")
     display_card = pn.Card(
-        bin_toggle, bin_hint, bin_width, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation,
+        bin_toggle, bin_hint, bin_width, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation, bg_fit_hint,
         title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
 
@@ -646,6 +655,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 controls.update_category_counts()
                 regions_panel.refresh()
                 redraw_full(event.new)
+                update_bg_image()
 
     def on_prev(event):
         i = dataset.sample_ids.index(sample_select.value)
