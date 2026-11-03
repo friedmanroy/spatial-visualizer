@@ -106,7 +106,7 @@ class RegionsPanel:
         self.de_status = pn.pane.HTML("", sizing_mode="stretch_width", margin=(0, 5), styles=HINT_STYLE)
         de_hint = pn.pane.HTML(
             f"Ranks the genes that differ between the cells of the compared regions "
-            f"(scanpy's rank_genes_groups on the normalized data, background genes left out; "
+            f"(scanpy's rank_genes_groups on the normalized data, log1p'd first if it isn't already; background genes left out; "
             f"at most {de.DEFAULT_MAX_CELLS:,} randomly chosen cells per side).",
             styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5),
         )

@@ -2,7 +2,8 @@
 `sc.tl.rank_genes_groups`.
 
 Works on the cells' .X, which the landing page normalizes + log1p's when asked to (the
-default for raw counts), so the log fold changes are meaningful. Background genes are left
+default for raw counts). If .X wasn't log1p'd (see is_log1p), the compared cells are
+log1p'd here first, so the log fold changes are meaningful either way. Background genes are left
 out, as everywhere else in the app. Cells in one lasso aren't independent replicates,
 so the p-values are best read as a ranking rather than as calibrated significance.
 """
@@ -14,6 +15,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import scipy.sparse as sp
 
 VS_REST = "Each region vs the rest of its sample"
 VS_OTHERS = "Each region vs all other regions"
@@ -22,6 +24,9 @@ COMPARISONS = (VS_REST, VS_OTHERS, A_VS_B)
 METHODS = {"Wilcoxon rank-sum": "wilcoxon", "t-test (Welch)": "t-test"}
 #: each side of a comparison is a random sample of at most this many cells
 DEFAULT_MAX_CELLS = 20_000
+#: log1p'd expression rarely tops this (log1p of a million is ~14); larger values mean
+#: .X holds counts or normalized-but-unlogged values
+LOG1P_MAX = 30
 #: a gene counts as up / down in the volcano plot and summaries past these
 LFC_THRESHOLD = 0.5
 PADJ_THRESHOLD = 0.05
@@ -43,6 +48,7 @@ class DEResult:
     n_reference_total: int
     method: str
     table: pd.DataFrame  # one row per gene, columns as in COLUMNS' values (+ "Direction")
+    log1p_applied: bool = False  # .X wasn't log1p'd, so run() log1p'd the compared cells
 
     @property
     def title(self) -> str:
@@ -80,6 +86,19 @@ def comparisons(regions, mode: str, a: str | None = None, b: str | None = None) 
     return out
 
 
+def is_log1p(dataset, X) -> bool:
+    """Whether the expression `X` (rows of dataset.adata.X) is already log1p'd: the app
+    normalized it, scanpy's log1p marked it, or its values look logged (whole numbers are
+    counts; values past LOG1P_MAX are unlogged). Negative values (scaled data) count as
+    logged, since log1p can't apply to them."""
+    if dataset.counts is not None or "log1p" in dataset.adata.uns:
+        return True
+    values = X.data if sp.issparse(X) else np.asarray(X).ravel()
+    if values.size == 0 or values.min() < 0:
+        return True
+    return not (values.max() > LOG1P_MAX or np.all(values == np.round(values)))
+
+
 def _subsample(cells: np.ndarray, max_cells: int, rng) -> np.ndarray:
     if len(cells) <= max_cells:
         return cells
@@ -98,8 +117,12 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
     r = _subsample(ref_cells, max_cells, rng)
     keep = np.flatnonzero(~dataset.background_mask())
     rows = np.concatenate([g, r])
+    X = dataset.adata.X[rows][:, keep]
+    log1p_applied = not is_log1p(dataset, X)
+    if log1p_applied:
+        X = X.log1p() if sp.issparse(X) else np.log1p(np.asarray(X, dtype=np.float64))
     sub = ad.AnnData(
-        X=dataset.adata.X[rows][:, keep],
+        X=X,
         obs=pd.DataFrame({"side": pd.Categorical(["group"] * len(g) + ["reference"] * len(r))},
                          index=[str(i) for i in range(len(rows))]),
         var=pd.DataFrame(index=dataset.adata.var_names[keep].astype(str)),
@@ -120,4 +143,4 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
     df["Direction"] = np.where(significant & (df["log2 FC"] >= LFC_THRESHOLD), "up",
                                np.where(significant & (df["log2 FC"] <= -LFC_THRESHOLD), "down", ""))
     return DEResult(group_label, ref_label, len(g), len(r), len(group_cells), len(ref_cells),
-                    method, df.reset_index(drop=True))
+                    method, df.reset_index(drop=True), log1p_applied)

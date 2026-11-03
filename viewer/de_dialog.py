@@ -94,7 +94,9 @@ class DEDialog:
             f"<b>{html.escape(r.reference)}</b> ({cells(r.n_reference, r.n_reference_total)}).<br>"
             f"<span style='color:{_UP}'><b>{n_up}</b> genes up</span> and "
             f"<span style='color:{_DOWN}'><b>{n_down}</b> down</span> in {html.escape(r.group)} "
-            f"(adj. p &lt; {de.PADJ_THRESHOLD:g}, |log2 FC| ≥ {de.LFC_THRESHOLD:g}).",
+            f"(adj. p &lt; {de.PADJ_THRESHOLD:g}, |log2 FC| ≥ {de.LFC_THRESHOLD:g})."
+            + ("<br>The expression wasn't log-transformed, so it was log1p'd for this comparison."
+               if r.log1p_applied else ""),
             sizing_mode="stretch_width", margin=(4, 5), styles={"font-size": "13px"},
         )
         table = pn.widgets.Tabulator(
