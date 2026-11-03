@@ -67,7 +67,10 @@ class Dataset:
         self.name = name
         # .X from before the app normalized it (normalize_total + log1p), or None if it
         # didn't: hexagonal bins sum these counts and then normalize (clustering.hex_profiles).
+        # For huge samples only the bins are normalized: .X stays raw and this is .X itself.
         self.counts = None
+        # Whether the app normalized each cell / spot's .X (not just the hexagons').
+        self.normalized_spots = False
         self.sample_col: str | None = None
         self.sample_ids: list[str] = []
         self._sample_indices: dict[str, np.ndarray] = {}

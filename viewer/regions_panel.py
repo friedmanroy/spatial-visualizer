@@ -28,12 +28,15 @@ _CONFIRM_MS = 4000
 class RegionsPanel:
     """`get_sample`: () -> the sample shown; `on_change`: () -> None, recolors the plot
     after regions change; `add_field`: (column) -> None, offers a new obs column for
-    coloring and colors by it; `color_by_genes`: (genes) -> None."""
+    coloring and colors by it; `color_by_genes`: (genes) -> None; `get_hex_width`:
+    () -> the width (in cell spacings) of the hexagons the plot bins cells into, or None
+    if it doesn't - call update_hex_width() when that changes."""
 
-    def __init__(self, state, fig, get_sample, on_change, add_field, color_by_genes):
+    def __init__(self, state, fig, get_sample, on_change, add_field, color_by_genes, get_hex_width):
         self.state = state
         self.dataset = state.spatial
         self.get_sample = get_sample
+        self.get_hex_width = get_hex_width
         self.on_change = on_change
         self.add_field = add_field
         self.regions = regions_mod.Regions(self.dataset)
@@ -96,6 +99,10 @@ class RegionsPanel:
         self.region_a = pn.widgets.Select(name="Region A", options=[], sizing_mode="stretch_width")
         self.region_b = pn.widgets.Select(name="Region B", options=[], sizing_mode="stretch_width")
         self.method = pn.widgets.Select(name="Test", options=list(de.METHODS), sizing_mode="stretch_width")
+        # Only offered while the plot bins cells into hexagons: those are the bins pooled.
+        self.de_unit = pn.widgets.Select(name="Compare as", options=list(de.UNITS), value=de.HEXAGONS,
+                                         sizing_mode="stretch_width")
+        self.de_unit_hint = pn.pane.HTML("", styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5))
         self.comparison.param.watch(self._update_de_widgets, "value")
         self.de_btn = pn.widgets.Button(name="Run differential expression", button_type="primary",
                                         sizing_mode="stretch_width", margin=(8, 5, 4, 5))
@@ -105,9 +112,10 @@ class RegionsPanel:
         self.last_btn.on_click(lambda e: state.de_dialog.open())
         self.de_status = pn.pane.HTML("", sizing_mode="stretch_width", margin=(0, 5), styles=HINT_STYLE)
         de_hint = pn.pane.HTML(
-            f"Ranks the genes that differ between the cells of the compared regions "
+            f"Ranks the genes that differ between the compared regions - cell by cell, or, while the "
+            f"plot bins cells into hexagons, hexagon by hexagon "
             f"(scanpy's rank_genes_groups on the normalized data, log1p'd first if it isn't already; background genes left out; "
-            f"at most {de.DEFAULT_MAX_CELLS:,} randomly chosen cells per side).",
+            f"at most {de.DEFAULT_MAX_CELLS:,} randomly chosen cells or hexagons per side).",
             styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5),
         )
         self.empty_hint = pn.pane.HTML(
@@ -122,14 +130,30 @@ class RegionsPanel:
             pn.Row(self.save_btn, self.clear_btn, sizing_mode="stretch_width", margin=0),
             self.status,
             heading("Differential expression"), de_hint,
-            self.comparison, self.region_a, self.region_b, self.method, self.de_btn, self.last_btn,
+            self.comparison, self.region_a, self.region_b, self.method, self.de_unit, self.de_unit_hint, self.de_btn, self.last_btn,
             self.de_status,
             title="Regions & differential expression", collapsed=not self.regions.items,
             sizing_mode="stretch_width", margin=(4, 5),
         )
+        self.update_hex_width()
         self.refresh()
 
     # -- used by the Spatial tab -----------------------------------------------------
+    def update_hex_width(self):
+        """Offers comparing hexagons only while the plot bins cells into them."""
+        width = self.get_hex_width()
+        self.de_unit.visible = self.de_unit_hint.visible = width is not None
+        if width is not None:
+            self.de_unit_hint.object = (
+                f"Spots are sparse, so hexagons pool each side's spots per bin as drawn ({width:g} cell "
+                f"spacings wide; only bins at least {de.MIN_HEX_SHARE:.0%} on that side): fewer, but much "
+                f"richer profiles, closer to single cells.")
+
+    def _de_hex_width(self) -> float | None:
+        """The hexagon width DE pools spots into, or None to compare individual spots."""
+        width = self.get_hex_width()
+        return width if width is not None and self.de_unit.value == de.HEXAGONS else None
+
     def mask_colors(self, colors: np.ndarray, idx: np.ndarray, binning=None) -> np.ndarray:
         """`colors` (of the sample's cells `idx`, or of its bins) with everything outside
         the regions grayed out, if that's on and the sample has any regions."""
@@ -281,17 +305,19 @@ class RegionsPanel:
             self.de_status.object = html.escape(str(exc))
             return
         method = de.METHODS[self.method.value]
+        hex_width = self._de_hex_width()
         results, errors = [], []
         n = len(comparisons)
         busy = self.state.busy
         try:
             async with busy.show("Comparing regions (differential expression)...",
-                                 f"{n} comparison{'s' if n != 1 else ''}, {self.method.value}"):
+                                 f"{n} comparison{'s' if n != 1 else ''}, {self.method.value}"
+                                 + ("" if hex_width is None else f", hexagons {hex_width:g} wide")):
                 for group, g_cells, ref, r_cells in comparisons:
                     busy.step(f"{group} vs {ref}")
                     try:
                         results.append(await asyncio.to_thread(de.run, self.dataset, group, g_cells, ref, r_cells,
-                                                               method))
+                                                               method, hex_width=hex_width))
                     except ValueError as exc:
                         errors.append(str(exc))
                 await busy.step_now("Showing the results")

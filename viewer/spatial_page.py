@@ -464,6 +464,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     regions_panel = RegionsPanel(
         state, fig, get_sample=lambda: sample_select.value, on_change=recolor_only,
         add_field=lambda col: add_and_announce_field(col, select=True), color_by_genes=color_by_genes,
+        get_hex_width=lambda: bin_width.value if bin_toggle.value else None,
     )
     dataset.gene_filter = state.gene_filter.value  # before the gene suggestions are filled in
     controls.refresh_for_dataset()
@@ -671,6 +672,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     async def on_binning_change(event):
         bin_width.visible = detail_toggle.visible = detail_max.visible = bin_toggle.value
+        regions_panel.update_hex_width()
         message = "Grouping cells into hexagonal bins..." if bin_toggle.value else "Drawing individual cells..."
         async with busy_if_slow(sample_select.value, message):
             with pn.io.hold():

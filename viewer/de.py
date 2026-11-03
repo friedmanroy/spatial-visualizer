@@ -4,8 +4,14 @@
 Works on the cells' .X, which the landing page normalizes + log1p's when asked to (the
 default for raw counts). If .X wasn't log1p'd (see is_log1p), the compared cells are
 log1p'd here first, so the log fold changes are meaningful either way. Background genes are left
-out, as everywhere else in the app. Cells in one lasso aren't independent replicates,
-so the p-values are best read as a ranking rather than as calibrated significance.
+out, as everywhere else in the app.
+
+Spots are sparse (often only tens of UMIs), so each side can instead be compared as
+hexagons: the side's spots are pooled per hexagonal bin of the Spatial view, the way
+clustering.hex_profiles makes bins (summed counts normalized per bin, else the spots'
+mean), keeping only bins mostly covered by that side. Either way, units in one lasso
+aren't independent replicates, so the p-values are best read as a ranking rather than
+as calibrated significance.
 """
 from __future__ import annotations
 
@@ -22,6 +28,12 @@ VS_OTHERS = "Each region vs all other regions"
 A_VS_B = "Region A vs region B"
 COMPARISONS = (VS_REST, VS_OTHERS, A_VS_B)
 METHODS = {"Wilcoxon rank-sum": "wilcoxon", "t-test (Welch)": "t-test"}
+SPOTS = "Individual spots"
+HEXAGONS = "Hexagons (spots pooled per bin)"
+UNITS = (HEXAGONS, SPOTS)
+#: a hexagon joins a side only if that side holds at least this share of its spots, so
+#: slivers cut off by a region's edge (nearly as sparse as single spots) are left out
+MIN_HEX_SHARE = 0.5
 #: each side of a comparison is a random sample of at most this many cells
 DEFAULT_MAX_CELLS = 20_000
 #: log1p'd expression rarely tops this (log1p of a million is ~14); larger values mean
@@ -42,13 +54,16 @@ COLUMNS = {
 class DEResult:
     group: str  # e.g. "Region 1"
     reference: str  # e.g. "rest of sample A"
-    n_group: int  # cells actually compared (after subsampling)
+    n_group: int  # units (cells, or hexagons) actually compared (after subsampling)
     n_reference: int
-    n_group_total: int  # cells in the group before subsampling
+    n_group_total: int  # units in the group before subsampling
     n_reference_total: int
     method: str
     table: pd.DataFrame  # one row per gene, columns as in COLUMNS' values (+ "Direction")
-    log1p_applied: bool = False  # .X wasn't log1p'd, so run() log1p'd the compared cells
+    log1p_applied: bool = False  # .X wasn't log1p'd, so run() log1p'd the compared values
+    unit: str = "cells"  # what each compared row is: "cells" or "hexagons"
+    n_group_cells: int = 0  # cells pooled into the group's hexagons (hexagons only)
+    n_reference_cells: int = 0
 
     @property
     def title(self) -> str:
@@ -88,15 +103,61 @@ def comparisons(regions, mode: str, a: str | None = None, b: str | None = None) 
 
 def is_log1p(dataset, X) -> bool:
     """Whether the expression `X` (rows of dataset.adata.X) is already log1p'd: the app
-    normalized it, scanpy's log1p marked it, or its values look logged (whole numbers are
-    counts; values past LOG1P_MAX are unlogged). Negative values (scaled data) count as
+    normalized each spot, scanpy's log1p marked it, or its values look logged (whole numbers
+    are counts; values past LOG1P_MAX are unlogged). Negative values (scaled data) count as
     logged, since log1p can't apply to them."""
-    if dataset.counts is not None or "log1p" in dataset.adata.uns:
+    if dataset.normalized_spots:
+        return True
+    if dataset.counts is not None:  # only hexagons get normalized: .X is the raw counts
+        return False
+    if "log1p" in dataset.adata.uns:
         return True
     values = X.data if sp.issparse(X) else np.asarray(X).ravel()
     if values.size == 0 or values.min() < 0:
         return True
     return not (values.max() > LOG1P_MAX or np.all(values == np.round(values)))
+
+
+def _hex_profiles(dataset, cells: np.ndarray, width_factor: float):
+    """(one row per hexagon of the Spatial view's `width_factor` bins that `cells` mostly
+    cover - their pooled expression, before any log1p - , whether those rows are already
+    log1p'd, how many of `cells` went into them). Pooled like clustering.hex_profiles:
+    with the pre-normalization counts kept, the bin's summed counts, normalize_total +
+    log1p; otherwise the mean of its cells' .X."""
+    summed = dataset.counts is not None
+    source = dataset.counts if summed else dataset.adata.X
+    blocks, n_pooled = [], 0
+    for sid in dataset.sample_ids:
+        idx = dataset.sample_indices(sid)
+        side = cells[np.isin(cells, idx, assume_unique=True)]
+        if not len(side):
+            continue
+        binning = dataset.hex_binning(sid, width_factor)
+        bins = binning.cell_bin[np.searchsorted(idx, side)]
+        uniq, inverse, n_in = np.unique(bins, return_inverse=True, return_counts=True)
+        kept = n_in >= MIN_HEX_SHARE * binning.counts[uniq]
+        rows = kept[inverse]
+        if not rows.any():
+            continue
+        new_id = np.cumsum(kept) - 1
+        weights = np.ones(int(rows.sum())) if summed else 1.0 / n_in[inverse[rows]]
+        pool = sp.csr_matrix((weights, (new_id[inverse[rows]], np.arange(int(rows.sum())))),
+                             shape=(int(kept.sum()), int(rows.sum())))
+        blocks.append(pool @ source[side[rows]])
+        n_pooled += int(rows.sum())
+    if not blocks:
+        return None, True, 0
+    X = sp.vstack(blocks, format="csr") if sp.issparse(blocks[0]) else np.vstack([np.asarray(b) for b in blocks])
+    if not summed:
+        return X, is_log1p(dataset, source[cells[:_LOG_CHECK_CELLS]]), n_pooled
+    bins = ad.AnnData(X.astype(np.float32))
+    sc.pp.normalize_total(bins)
+    sc.pp.log1p(bins)
+    return bins.X, True, n_pooled
+
+
+#: how many of a side's cells hexagon DE inspects to tell whether .X is log1p'd
+_LOG_CHECK_CELLS = 20_000
 
 
 def _subsample(cells: np.ndarray, max_cells: int, rng) -> np.ndarray:
@@ -106,25 +167,45 @@ def _subsample(cells: np.ndarray, max_cells: int, rng) -> np.ndarray:
 
 
 def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_cells: np.ndarray,
-        method: str = "wilcoxon", max_cells: int = DEFAULT_MAX_CELLS, seed: int = 0) -> DEResult:
+        method: str = "wilcoxon", max_cells: int = DEFAULT_MAX_CELLS, seed: int = 0,
+        hex_width: float | None = None) -> DEResult:
     """Ranks the genes (background genes left out) differentially expressed between
-    `group_cells` and `ref_cells` (obs indices)."""
-    if len(group_cells) < 3 or len(ref_cells) < 3:
-        raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 cells "
-                         f"(has {len(group_cells)} and {len(ref_cells)}).")
+    `group_cells` and `ref_cells` (obs indices) - cell by cell, or, given `hex_width`,
+    between the hexagons (that many cell spacings wide) each side's cells are pooled into."""
     rng = np.random.default_rng(seed)
-    g = _subsample(group_cells, max_cells, rng)
-    r = _subsample(ref_cells, max_cells, rng)
     keep = np.flatnonzero(~dataset.background_mask())
-    rows = np.concatenate([g, r])
-    X = dataset.adata.X[rows][:, keep]
-    log1p_applied = not is_log1p(dataset, X)
+    if hex_width is None:
+        unit, n_group_cells, n_ref_cells = "cells", 0, 0
+        g_total, r_total = len(group_cells), len(ref_cells)
+        if g_total < 3 or r_total < 3:
+            raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 cells "
+                             f"(has {g_total} and {r_total}).")
+        g = _subsample(group_cells, max_cells, rng)
+        r = _subsample(ref_cells, max_cells, rng)
+        X = dataset.adata.X[np.concatenate([g, r])][:, keep]
+        logged = is_log1p(dataset, X)
+    else:
+        unit = "hexagons"
+        g_X, g_logged, n_group_cells = _hex_profiles(dataset, np.sort(group_cells), hex_width)
+        r_X, r_logged, n_ref_cells = _hex_profiles(dataset, np.sort(ref_cells), hex_width)
+        g_total = 0 if g_X is None else g_X.shape[0]
+        r_total = 0 if r_X is None else r_X.shape[0]
+        if g_total < 3 or r_total < 3:
+            raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 hexagons at least "
+                             f"half inside it (has {g_total} and {r_total}) - try narrower bins, or "
+                             f"individual spots.")
+        g = _subsample(np.arange(g_total), max_cells, rng)
+        r = _subsample(np.arange(r_total), max_cells, rng)
+        stack = sp.vstack if sp.issparse(g_X) else np.vstack
+        X = stack([g_X[g][:, keep], r_X[r][:, keep]])
+        logged = g_logged and r_logged
+    log1p_applied = not logged
     if log1p_applied:
         X = X.log1p() if sp.issparse(X) else np.log1p(np.asarray(X, dtype=np.float64))
     sub = ad.AnnData(
         X=X,
         obs=pd.DataFrame({"side": pd.Categorical(["group"] * len(g) + ["reference"] * len(r))},
-                         index=[str(i) for i in range(len(rows))]),
+                         index=[str(i) for i in range(len(g) + len(r))]),
         var=pd.DataFrame(index=dataset.adata.var_names[keep].astype(str)),
     )
     sc.tl.rank_genes_groups(sub, "side", groups=["group"], reference="reference", method=method,
@@ -142,5 +223,5 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
     significant = df["Adj. p-value"] < PADJ_THRESHOLD
     df["Direction"] = np.where(significant & (df["log2 FC"] >= LFC_THRESHOLD), "up",
                                np.where(significant & (df["log2 FC"] <= -LFC_THRESHOLD), "down", ""))
-    return DEResult(group_label, ref_label, len(g), len(r), len(group_cells), len(ref_cells),
-                    method, df.reset_index(drop=True), log1p_applied)
+    return DEResult(group_label, ref_label, len(g), len(r), g_total, r_total,
+                    method, df.reset_index(drop=True), log1p_applied, unit, n_group_cells, n_ref_cells)

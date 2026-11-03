@@ -86,12 +86,13 @@ class DEDialog:
         t = r.table
         n_up, n_down = int((t["Direction"] == "up").sum()), int((t["Direction"] == "down").sum())
 
-        def cells(n, total):
-            return f"{total:,} cells" if n == total else f"a random {n:,} of its {total:,} cells"
+        def units(n, total, pooled):
+            text = f"{total:,} {r.unit}" if n == total else f"a random {n:,} of its {total:,} {r.unit}"
+            return text + (f" pooling {pooled:,} cells" if r.unit == "hexagons" else "")
 
         summary = pn.pane.HTML(
-            f"<b>{html.escape(r.group)}</b> ({cells(r.n_group, r.n_group_total)}) vs "
-            f"<b>{html.escape(r.reference)}</b> ({cells(r.n_reference, r.n_reference_total)}).<br>"
+            f"<b>{html.escape(r.group)}</b> ({units(r.n_group, r.n_group_total, r.n_group_cells)}) vs "
+            f"<b>{html.escape(r.reference)}</b> ({units(r.n_reference, r.n_reference_total, r.n_reference_cells)}).<br>"
             f"<span style='color:{_UP}'><b>{n_up}</b> genes up</span> and "
             f"<span style='color:{_DOWN}'><b>{n_down}</b> down</span> in {html.escape(r.group)} "
             f"(adj. p &lt; {de.PADJ_THRESHOLD:g}, |log2 FC| ≥ {de.LFC_THRESHOLD:g})."

@@ -41,7 +41,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     normalize_hint = pn.pane.HTML(
         "For raw counts. Each cell / spot is normalized for coloring, differential expression and "
         "per-cell clustering; hexagons sum their spots' <i>raw</i> counts first and are then "
-        "normalized as one unit. Uncheck if <code>.X</code> is already normalized - it's then used "
+        f"normalized as one unit. Above {hexbin.BINNING_THRESHOLD:,} spots in a sample, only the "
+        "hexagons are normalized - single spots are too sparse, and stay raw counts. "
+        "Uncheck if <code>.X</code> is already normalized - it's then used "
         "as-is, and hexagons hold their spots' mean.",
         styles=HINT_STYLE, width=560, margin=(0, 10, 10, 30),
     )
@@ -194,16 +196,23 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
+        # Set first: normalizing depends on the samples' sizes, and hexagon-level
+        # clustering bins each sample separately.
+        sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
+        ds.set_sample_column(sample_col)
         # Before anything reads the expression; only once, should opening be retried.
         if normalize_checkbox.value and ds.counts is None:
-            async with busy.show("Normalizing...", f"{ds.adata.n_obs:,} cells, normalize_total + log1p"):
-                ds.counts = await asyncio.to_thread(clustering.normalize_keeping_counts, ds.adata)
+            if ds.largest_sample_size() > hexbin.BINNING_THRESHOLD:
+                # Spots this many are drawn as hexagons, and are too sparse to normalize
+                # one by one: they stay raw counts, and only hexagon pools get normalized.
+                ds.counts = ds.adata.X
+            else:
+                async with busy.show("Normalizing...", f"{ds.adata.n_obs:,} cells, normalize_total + log1p"):
+                    ds.counts = await asyncio.to_thread(clustering.normalize_keeping_counts, ds.adata)
+                ds.normalized_spots = True
         normalize_checkbox.disabled = ds.counts is not None
         if ds.color_cache is not None:
             ds.color_cache.set_normalize(normalize_checkbox.value)
-        # Set first: hexagon-level clustering bins each sample separately.
-        sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
-        ds.set_sample_column(sample_col)
         if leiden_checkbox.value:
             open_status.object = ""
             largest = ds.largest_sample_size()
