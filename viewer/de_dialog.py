@@ -111,7 +111,7 @@ class DEDialog:
             header_filters={"Gene": {"type": "input", "func": "like", "placeholder": "Search"},
                             "Direction": {"type": "list", "func": "=", "valuesLookup": True}},
         )
-        volcano = self._volcano(r, on_pick=lambda gene: self._color_by([gene]))
+        volcano, highlight = self._volcano(r, on_pick=lambda gene: self._color_by([gene]))
 
         up_btn = pn.widgets.Button(name=f"Color by top {_TOP} up", button_type="primary", margin=(5, 5))
         abs_btn = pn.widgets.Button(name=f"Color by top {_TOP} |log2 FC|", margin=(5, 5),
@@ -132,6 +132,7 @@ class DEDialog:
             picked_btn.disabled = n == 0
             picked_btn.name = (f"Color by checked genes ({n})" if n <= _TOP
                                else f"Color by the first {_TOP} checked genes")
+            highlight(picked())
 
         table.param.watch(on_selection, "selection")
         picked_btn.on_click(lambda e: self._color_by(picked()))
@@ -143,7 +144,8 @@ class DEDialog:
         buttons = pn.Row(up_btn, abs_btn, picked_btn, download, sizing_mode="stretch_width", margin=0)
         hint = pn.pane.HTML(
             "Click a point in the volcano plot to color the tissue by that gene; check genes in the "
-            "table (search with the box under <i>Gene</i>) to color by them.",
+            "table (search with the box under <i>Gene</i>) to color by them - while any are checked, "
+            "only they are colored and labeled in the volcano plot.",
             sizing_mode="stretch_width", margin=(0, 5), styles={"font-size": "12px", "color": "#666"},
         )
         return pn.Column(
@@ -153,7 +155,9 @@ class DEDialog:
         )
 
     @staticmethod
-    def _volcano(r: de.DEResult, on_pick) -> pn.viewable.Viewable:
+    def _volcano(r: de.DEResult, on_pick):
+        """(the volcano plot, highlight(genes)): while `genes` isn't empty, only those
+        points keep their color and get labels; the rest turn gray."""
         t = r.table
         neg_log_p = np.minimum(-np.log10(np.maximum(t["Adj. p-value"].to_numpy(float), 1e-300)), _MAX_NEG_LOG_P)
         color = np.select([t["Direction"] == "up", t["Direction"] == "down"], [_UP, _DOWN], _NS)
@@ -171,12 +175,32 @@ class DEDialog:
         fig.add_tools(TapTool(renderers=[dots]))
         for value in (de.LFC_THRESHOLD, -de.LFC_THRESHOLD):
             fig.line([value, value], [0, float(neg_log_p.max(initial=1))], color="#999", line_dash="dashed")
-        # Label the strongest few genes each way, on the side facing the middle of the plot.
-        for direction, align, offset in (("up", "right", -5), ("down", "left", 5)):
-            rows = t.index[t["Gene"].isin(r.top(direction, _LABELED))]
-            fig.text(t.loc[rows, "log2 FC"].to_numpy(float), neg_log_p[rows],
-                     text=t.loc[rows, "Gene"].astype(str).tolist(), text_font_size="10px", text_align=align,
-                     text_baseline="middle", x_offset=offset, text_color="#333")
+        # Checked genes' points, drawn over the others in their own color.
+        picked_source = ColumnDataSource({"x": [], "y": [], "color": []})
+        fig.scatter("x", "y", source=picked_source, color="color", size=8, line_color="black")
+
+        # Labels on the side facing the middle of the plot: the strongest few genes each
+        # way, or the checked genes while any are.
+        label_source = ColumnDataSource({"x": [], "y": [], "text": [], "align": [], "offset": []})
+        fig.text("x", "y", text="text", source=label_source, text_font_size="10px", text_align="align",
+                 text_baseline="middle", x_offset="offset", text_color="#333")
+
+        def labels(rows) -> dict:
+            right = t.loc[rows, "log2 FC"].to_numpy(float) > 0
+            return {"x": t.loc[rows, "log2 FC"].to_numpy(float), "y": neg_log_p[rows],
+                    "text": t.loc[rows, "Gene"].astype(str).tolist(),
+                    "align": np.where(right, "right", "left").tolist(), "offset": np.where(right, -5, 5).tolist()}
+
+        top_rows = t.index[t["Gene"].isin(r.top("up", _LABELED) + r.top("down", _LABELED))]
+        label_source.data = labels(top_rows)
+
+        def highlight(genes: list[str]):
+            rows = t.index[t["Gene"].isin(genes)]
+            source.data["color"] = np.full(len(t), _NS) if len(rows) else color
+            source.data = dict(source.data)
+            picked_source.data = {"x": t.loc[rows, "log2 FC"].to_numpy(float), "y": neg_log_p[rows],
+                                  "color": color[rows]}
+            label_source.data = labels(rows if len(rows) else top_rows)
 
         def on_tap(attr, old, new):
             if new:
@@ -184,4 +208,4 @@ class DEDialog:
                 source.selected.indices = []
 
         source.selected.on_change("indices", on_tap)
-        return pn.pane.Bokeh(fig, margin=(0, 10, 0, 0))
+        return pn.pane.Bokeh(fig, margin=(0, 10, 0, 0)), highlight
