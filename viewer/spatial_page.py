@@ -57,10 +57,13 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     bin_width = pn.widgets.FloatInput(
-        name="Bin width (in cell spacings)", value=hexbin.default_width_factor(largest_sample),
+        name="Bin width (in cell spacings)",
+        value=hexbin.default_width_factor(dataset.sample_width_spots(dataset.largest_sample())),
         start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
         description="How many neighboring cells wide each hexagon is; a bin k wide holds about k² cells.",
     )
+    bin_width_note = pn.pane.HTML("", styles=_HINT_STYLE, margin=(0, 5, 4, 5), sizing_mode="stretch_width",
+                                  visible=bin_toggle.value)
 
     # Zoomed in far enough, the bins give way to the individual cells in view (and a
     # margin around it, so small pans don't need new data).
@@ -514,6 +517,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     # Before any other watcher: an emptied number box gets its last value back.
     keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
 
+    def width_note(factor) -> str:
+        return hexbin.width_note(dataset.sample_width_spots(sample_select.value), factor)
+
+    def update_bin_width_note(*events):
+        bin_width_note.object = width_note(bin_width.value)
+
     def update_leiden_target(*events):
         hexes = leiden_unit.value == clustering.HEXAGONS
         leiden_width.visible = hexes
@@ -526,9 +535,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             + "then gives each spot / cell its hexagon's result - "
             "for sub-cellular data such as Xenium or Open-ST. "
             if hexes else "Clusters and cell-types individual cells - for segmented single-cell data. "
-        ) + "The result is added as a new field to color by."
+        ) + "The result is added as a new field to color by." + (
+            f"<br>{width_note(leiden_width.value)}" if hexes else "")
 
     update_leiden_target()
+    update_bin_width_note()
+    bin_width.param.watch(update_bin_width_note, "value")
     for w in (leiden_unit, leiden_width, bin_toggle, bin_width):
         w.param.watch(update_leiden_target, "value")
 
@@ -643,7 +655,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_card.param.watch(on_leiden_card_toggle, "collapsed")
     display_card = pn.Card(
-        bin_toggle, bin_hint, bin_width, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation, bg_fit_hint,
+        bin_toggle, bin_hint, bin_width, bin_width_note, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation, bg_fit_hint,
         title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
     )
 
@@ -659,6 +671,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         sample_select.name = _sample_label(dataset.sample_ids.index(event.new), n_samples)
         async with busy_if_slow(event.new, f"Drawing {event.new}..."):
             with pn.io.hold():
+                update_bin_width_note()
+                update_leiden_target()
                 controls.update_category_counts()
                 regions_panel.refresh()
                 redraw_full(event.new)
@@ -677,7 +691,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     sample_select.param.watch(on_sample_change, "value")
 
     async def on_binning_change(event):
-        bin_width.visible = detail_toggle.visible = detail_max.visible = bin_toggle.value
+        bin_width.visible = bin_width_note.visible = detail_toggle.visible = detail_max.visible = bin_toggle.value
         regions_panel.update_hex_width()
         message = "Grouping cells into hexagonal bins..." if bin_toggle.value else "Drawing individual cells..."
         async with busy_if_slow(sample_select.value, message):

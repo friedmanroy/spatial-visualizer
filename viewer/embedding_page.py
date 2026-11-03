@@ -119,21 +119,29 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     )
     # The width the spatial data was last clustered with, if on hexagons; else automatic.
     spatial = state.spatial
-    largest = spatial.largest_sample_size() if spatial is not None else 0
+    width_spots = spatial.sample_width_spots(spatial.largest_sample()) if spatial is not None else 0.0
     used = list(spatial.hex_clusterings.values()) if spatial is not None else []
     hex_width = pn.widgets.FloatInput(
-        name="Hexagon width (in cell spacings)", value=used[-1] if used else hexbin.default_width_factor(largest),
+        name="Hexagon width (in cell spacings)", value=used[-1] if used else hexbin.default_width_factor(width_spots),
         start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width",
         description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
     )
     keep_filled(n_pcs_input, n_neighbors_input, hex_width)
+    subject = "The largest sample" if spatial is not None and len(spatial.sample_ids) > 1 else "The sample"
+    hex_width_note = pn.pane.HTML(hexbin.width_note(width_spots, hex_width.value, subject), styles=HINT_STYLE,
+                                  sizing_mode="stretch_width", margin=(0, 5, 4, 5))
+    hex_width.param.watch(lambda e: setattr(hex_width_note, "object", hexbin.width_note(width_spots, e.new, subject)),
+                          "value")
     compute_hint = pn.pane.HTML(
         "<b>Hexagons</b>: one point per hexagonal bin of the spatial data (its spots' mean "
         "expression) - for sub-cellular data such as Xenium or Open-ST, and much faster on "
         "huge samples. <b>Individual cells</b>: one point per cell.",
         styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5),
     )
-    compute_unit.param.watch(lambda e: setattr(hex_width, "visible", e.new == clustering.HEXAGONS), "value")
+    def on_compute_unit(event):
+        hex_width.visible = hex_width_note.visible = event.new == clustering.HEXAGONS
+
+    compute_unit.param.watch(on_compute_unit, "value")
     recompute_btn = pn.widgets.Button(
         name="Recompute with these settings", button_type="default", visible=False
     )
@@ -374,7 +382,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         pn.Row(n_pcs_input, n_neighbors_input),
         state.gene_filter.layout,
         "From the spatial data, embed:",
-        compute_unit, compute_hint, hex_width,
+        compute_unit, compute_hint, hex_width, hex_width_note,
         compute_btn,
         recompute_btn,
         title="Data source & PCA / UMAP", collapsed=False, sizing_mode="stretch_width", margin=(4, 5),

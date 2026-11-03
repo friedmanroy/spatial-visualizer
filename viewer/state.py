@@ -161,6 +161,8 @@ class Dataset:
 
     # -- sample / FOV splitting -----------------------------------------------
     def set_sample_column(self, colname: str | None):
+        if self.sample_ids and colname == self.sample_col:
+            return  # already split this way: keep the measured lattices and binnings
         self.sample_col = colname
         self._sample_indices = {}
         self._lattice_cache = {}
@@ -184,6 +186,17 @@ class Dataset:
 
     def largest_sample_size(self) -> int:
         return max(len(idx) for idx in self._sample_indices.values())
+
+    def largest_sample(self) -> str:
+        """The sample with the most cells."""
+        return max(self._sample_indices, key=lambda sid: len(self._sample_indices[sid]))
+
+    def sample_width_spots(self, sample_id: str) -> float:
+        """How many cell spacings the sample spans horizontally (0 if under 2 cells)."""
+        coords = self.sample_coords(sample_id)
+        if len(coords) < 2:
+            return 0.0
+        return float(np.ptp(coords[:, 0])) / self.sample_lattice(sample_id).spacing
 
     def sample_lattice(self, sample_id: str) -> spatial_plot.Lattice:
         if sample_id not in self._lattice_cache:

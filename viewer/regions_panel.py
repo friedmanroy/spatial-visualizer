@@ -15,14 +15,19 @@ import panel as pn
 from bokeh.events import SelectionGeometry
 from bokeh.models import ColumnDataSource, LassoSelectTool, PanTool
 
-from . import de
+from . import clustering, de
 from . import regions as regions_mod
 from .color_controls import HINT_STYLE, _SWATCH_CSS, _SWATCH_SIZE
 from .colors import GRAY_RGBA
+from .state import top_k_per_row
 
 _NEW_REGION = "A new region"
 #: a click of "Clear all" must be followed by another within this long (ms) to clear
 _CONFIRM_MS = 4000
+#: how many of a region's most expressed genes its "Top 3" button colors by (one per channel)
+_TOP_GENES = 3
+#: a region's most expressed genes are averaged over at most this many random cells
+_TOP_GENES_MAX_CELLS = 50_000
 
 
 class RegionsPanel:
@@ -44,6 +49,7 @@ class RegionsPanel:
         # overwrites one that came with the file.
         self.field_name = regions_mod.field_name(self.dataset.adata)
         self.regions.listeners.append(self._on_regions_change)
+        self.color_by_genes = color_by_genes
         state.de_dialog.on_color_genes = color_by_genes
 
         # -- drawing on the plot ---------------------------------------------------
@@ -232,10 +238,43 @@ class RegionsPanel:
         where = "" if len(self.dataset.sample_ids) == 1 else f" · {html.escape(r.sample)}"
         count = pn.pane.HTML(f"{len(r.cells):,} cells{where}", margin=(12, 4, 0, 4),
                              styles={"font-size": "12px", "color": "#555"}, sizing_mode="stretch_width")
+        top = pn.widgets.Button(name=f"Top {_TOP_GENES}", width=58, button_type="light", margin=(5, 2),
+                                description=f"Color by {r.name}'s {_TOP_GENES} most expressed genes "
+                                            "(background genes left out)")
+        top.on_click(lambda e, n=r.name: self._color_by_top_genes(n))
         delete = pn.widgets.Button(name="✕", width=32, button_type="light", margin=(5, 5),
                                    description=f"Delete {r.name}")
         delete.on_click(lambda e, n=r.name: self.regions.remove(n))
-        return pn.Row(picker, name, count, delete, sizing_mode="stretch_width", margin=0)
+        return pn.Row(picker, name, count, top, delete, sizing_mode="stretch_width", margin=0)
+
+    def region_top_genes(self, name: str, k: int = _TOP_GENES) -> list[str]:
+        """The region's k most expressed genes: highest mean log-normalized expression over
+        its cells (at most _TOP_GENES_MAX_CELLS random ones), background genes left out."""
+        region = self.regions.get(name)
+        ds = self.dataset
+        cells = region.cells if region is not None else np.zeros(0, dtype=int)
+        if not len(cells):
+            return []
+        if len(cells) > _TOP_GENES_MAX_CELLS:
+            cells = np.sort(np.random.default_rng(0).choice(cells, _TOP_GENES_MAX_CELLS, replace=False))
+        X = ds.adata.X[cells]
+        if ds.raw_spots:  # .X kept as raw counts: normalize just these cells
+            X = clustering.log_normalized(X, ds.adata).X
+        mean = np.asarray(X.mean(axis=0), dtype=float).reshape(1, -1)
+        top = top_k_per_row(mean, k, exclude=ds.background_mask())[0]
+        return [str(ds.adata.var_names[g]) for g in top if g >= 0]
+
+    def _color_by_top_genes(self, name: str):
+        genes = self.region_top_genes(name)
+        if not genes:
+            self.status.object = f"<b>{html.escape(name)}</b> has no cells (or no expressed genes) to pick from."
+            return
+        self.color_by_genes(genes)
+        region = self.regions.get(name)
+        elsewhere = (f" (it's on sample {html.escape(region.sample)})"
+                     if region is not None and region.sample != self.get_sample() else "")
+        self.status.object = (f"Colored by <b>{html.escape(name)}</b>'s most expressed genes: "
+                              + ", ".join(f"<b>{html.escape(g)}</b>" for g in genes) + elsewhere + ".")
 
     def _on_regions_change(self):
         with pn.io.hold():

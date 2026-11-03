@@ -20,7 +20,8 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Fields-of-view / samples** - pick which obs column splits the data into samples, then
   browse between them with a dropdown or Prev/Next.
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
-  (about 25,000 per sample by default, adjustable under **Display settings**): each bin shows
+  (by default about 250 hexagons across the sample's width - each hexagon-width box says how
+  many spots wide the sample is - adjustable under **Display settings**): each bin shows
   a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
   clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
   scores), or their most common selected category. Zoom in until at most

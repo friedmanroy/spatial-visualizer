@@ -79,20 +79,24 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         "<b>Individual cells</b>: for segmented single-cell data.",
         styles=HINT_STYLE, width=420, visible=False,
     )
+    # Filled in with the suggested width (about hexbin.TARGET_HEXAGONS_ACROSS hexagons across
+    # the largest sample) once the file is loaded and whenever the sample column changes.
     leiden_width = pn.widgets.FloatInput(
         name="Hexagon width (in cell spacings; empty = automatic)", value=None,
-        placeholder=f"automatic (about {hexbin.TARGET_BINS:,} hexagons per sample)",
-        start=1.0, end=100.0, step=0.5, width=340, visible=False,
+        placeholder=f"automatic (~{hexbin.TARGET_HEXAGONS_ACROSS} hexagons across)",
+        start=1.0, end=100.0, step=0.5, width=340,
         description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
     )
-    leiden_unit.param.watch(lambda e: setattr(leiden_width, "visible", e.new == HEXAGONS), "value")
+    leiden_width_note = pn.pane.HTML("", styles=HINT_STYLE, width=420, margin=(0, 10, 6, 10))
+    leiden_width_box = pn.Column(leiden_width, leiden_width_note, visible=False, margin=0)
+    leiden_unit.param.watch(lambda e: setattr(leiden_width_box, "visible", e.new == HEXAGONS), "value")
     typing = state.celltyping
     typing_box = pn.Column(state.gene_filter.layout, typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
 
     async def on_leiden_toggle(event):
         leiden_resolution.visible = typing_box.visible = event.new
         leiden_unit.visible = leiden_unit_hint.visible = event.new
-        leiden_width.visible = event.new and leiden_unit.value == HEXAGONS
+        leiden_width_box.visible = event.new and leiden_unit.value == HEXAGONS
         if event.new and typing.enabled.value:
             try:  # fetch PanglaoDB now (first time only) so the tissue list is filled in
                 await typing.ensure_markers()
@@ -106,11 +110,37 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     step2 = pn.Column(
         sample_col_select, pathways_input, normalize_checkbox, normalize_hint, field_picker,
         leiden_checkbox, leiden_unit, leiden_unit_hint,
-        leiden_width, leiden_resolution, typing_box,
+        leiden_width_box, leiden_resolution, typing_box,
         open_btn, open_status, visible=False,
     )
 
-    holder = {"dataset": None, "field_checkboxes": {}}
+    holder = {"dataset": None, "field_checkboxes": {}, "width_spots": 0.0, "width_subject": "The sample"}
+
+    def update_width_note(*events):
+        leiden_width_note.object = hexbin.width_note(holder["width_spots"], leiden_width.value,
+                                                     holder["width_subject"])
+
+    async def suggest_width(*events):
+        """Splits the samples as chosen, measures the largest one's width in spots and
+        fills in the hexagon width giving about TARGET_HEXAGONS_ACROSS hexagons across it."""
+        ds = holder["dataset"]
+        if ds is None:
+            return
+        col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
+
+        def measure():
+            ds.set_sample_column(col)
+            return ds.sample_width_spots(ds.largest_sample())
+
+        holder["width_spots"] = await asyncio.to_thread(measure)
+        holder["width_subject"] = "The largest sample" if len(ds.sample_ids) > 1 else "The sample"
+        suggested = hexbin.default_width_factor(holder["width_spots"])
+        leiden_width.placeholder = f"automatic: {suggested:g}"
+        leiden_width.value = suggested
+        update_width_note()
+
+    leiden_width.param.watch(update_width_note, "value")
+    sample_col_select.param.watch(suggest_width, "value")
 
     def on_select_all_fields(event):
         for cb in holder["field_checkboxes"].values():
@@ -181,6 +211,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 field_checkbox_box[:] = list(field_checkboxes.values())
 
             pathways_input.value = DEFAULT_PATHWAYS_PATH if os.path.exists(DEFAULT_PATHWAYS_PATH) else ""
+            busy.step("Measuring the samples' spot spacing (for the suggested hexagon width)")
+            await suggest_width()
 
             status.object = (
                 f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`. "
@@ -216,10 +248,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             ds.color_cache.set_normalize(normalize_checkbox.value)
         if leiden_checkbox.value:
             open_status.object = ""
-            largest = ds.largest_sample_size()
             # The automatic width is the one the Spatial tab draws huge samples with.
             on_hexbins = leiden_unit.value == HEXAGONS
-            width = leiden_width.value or hexbin.default_width_factor(largest)
+            width = leiden_width.value or hexbin.default_width_factor(ds.sample_width_spots(ds.largest_sample()))
             gene_filter = state.gene_filter.value
             detail = ((f"on hexagons {width:g} cell spacings wide over the " if on_hexbins else "on all ")
                       + f"{ds.adata.n_obs:,} cells, "

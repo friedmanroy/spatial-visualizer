@@ -15,8 +15,8 @@ import scipy.sparse as sp
 
 #: samples with more cells than this are shown hex-binned by default
 BINNING_THRESHOLD = 1_000_000
-#: the default bin width aims for roughly this many bins per sample
-TARGET_BINS = 25_000
+#: the automatic hexagon width puts about this many hexagons across a sample's width
+TARGET_HEXAGONS_ACROSS = 250
 
 
 @dataclass(frozen=True)
@@ -76,10 +76,23 @@ class HexBinning:
         return result, share
 
 
-def default_width_factor(n_cells: int) -> float:
-    """Bin width, in multiples of the cell spacing, giving about TARGET_BINS bins
-    (a bin `k` spacings wide holds roughly k^2 cells)."""
-    return round(max(1.5, float(np.sqrt(n_cells / TARGET_BINS))), 1)
+def default_width_factor(width_spots: float) -> float:
+    """Hexagon width, in cell spacings, putting about TARGET_HEXAGONS_ACROSS hexagons
+    across a sample `width_spots` cell spacings wide (Dataset.sample_width_spots); at least 1."""
+    return round(max(1.0, float(width_spots) / TARGET_HEXAGONS_ACROSS), 1)
+
+
+def width_note(width_spots: float, factor: float | None, subject: str = "This sample") -> str:
+    """One line for under a hexagon-width input: how wide the sample is in spots, how
+    many hexagons `factor` spots wide fit across it, and the automatic width."""
+    if width_spots <= 0:
+        return ""
+    auto = default_width_factor(width_spots)
+    text = f"{subject} is about {width_spots:,.0f} spots / cells wide"
+    if factor:
+        text += f": hexagons {factor:g} wide put ~{width_spots / factor:,.0f} across it"
+    # A narrow sample can't get TARGET_HEXAGONS_ACROSS (hexagons are at least 1 wide).
+    return text + f" (automatic: {auto:g} wide, ~{width_spots / auto:,.0f} across)."
 
 
 def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:

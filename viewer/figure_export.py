@@ -28,7 +28,7 @@ from matplotlib.patches import Patch
 
 #: the map's shorter side (inches); legends etc. are added outside it
 FIGURE_SHORT_SIDE = 5.0
-FONT_SIZE = 20
+FONT_SIZE = 18
 #: resolution of PNG / JPEG files, and of the (rasterized) cells inside a PDF
 DPI = 300
 #: file formats offered (label -> (matplotlib format, extension))
