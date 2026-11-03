@@ -382,36 +382,5 @@
         "Tomm70", "Uqcr10", "Uqcr11", "Uqcrb", "Uqcrc1", "Uqcrc2", "Uqcrfs1",
         "Uqcrh", "Uqcrq", "Vdac1", "Vdac2", "Vdac3"
       ]
-  },
-  "PAG": {
-    "cell_type": "global",
-    "source": "Dana",
-    "description": "Progenitor genes.",
-    "genes": [
-        "Plekhb2", "Mgat4a", "Stat1", "Mars2", "Nif3l1", "Ttll4", "Dgkd", "Hes6", "Tmco1", "Ifi202b",
-    "Chml", "Rps6kc1", "Ehmt1", "Gtf3c4", "Zdhhc12", "Tor2a", "Clp1", "Nat10", "Rbbp9", "Ralgapa2",
-    "Rbck1", "Ctsa", "Eya2", "Hltf", "Eif5a2", "Cog6", "Mfsd1", "Tmem144", "Lmna", "Shc1",
-    "Ensa", "Ptgfrn", "Fam212b", "Rbm15", "Ints12", "Tmem68", "Smu1", "Ubap1", "Sigmar1", "Rgp1",
-    "Clta", "AI314180", "Ptbp3", "Nsun4", "Trit1", "Bsdc1", "Eya3", "Fam76a", "Tmem57", "Fv1",
-    "Atad3a", "Fam185a", "Armc10", "Cad", "Whsc1", "Lrpap1", "Ube2k", "Ociad1", "Srp72", "Ccni",
-    "5430416N02Rik", "Coq2", "Spp1", "Srsf9", "Wsb2", "Rbm19", "Naa25", "Fam216a", "Hip1r", "Kmt5a",
-    "Bcl7b", "Mdh2", "Prkrip1", "Mad1l1", "Usp42", "Arpc1b", "Cep41", "Exoc4", "Skap2", "Avl9",
-    "Eif2ak3", "Mthfd2", "Sfxn5", "Cnbp", "Necap1", "Nop2", "D6Wsu163e", "Dusp16", "Zfp954", "Dhx34",
-    "Zfp27", "Sbsn", "Lamtor1", "Nsmce1", "Apobr", "Mvp", "Zfp553", "Mcoln1", "Prosc", "Casp3",
-    "Zfp866", "Heatr3", "Csnk2a2", "Atp6v0d1", "Cmtr2", "Cog4", "Chmp1a", "Ntpcr", "Ubl5", "Tyk2",
-    "Tmed1", "Anln", "Dpy19l1", "Aplp2", "Siae", "Zpr1", "Ube2q2", "Fam219b", "Clk3", "Stoml1",
-    "Lysmd2", "Slc17a5", "Dag1", "Glb1", "Akap7", "Soga3", "Zbtb24", "Hace1", "Micu1", "Sgpl1",
-    "Ube2d1", "Pttg1ip", "Cstb", "Mob3a", "Csrp2", "Zdhhc17", "Dctn2", "Zc3h10", "Pus10", "Rack1",
-    "Gemin5", "Drg2", "Natd1", "2410006H16Rik", "Cox10", "C1qbp", "Mybbp1a", "Lig3", "Heatr6", "Med13",
-    "Gdpd1", "Prr11", "Mtmr4", "Ppp1r9b", "Phb", "Mien1", "Fam134c", "Hn1", "Acox1", "Prpsap1",
-    "Usp36", "Ccdc137", "Sh3yl1", "Fam110c", "Bzw2", "Slc38a6", "Plekhg3", "Plek2", "Tdp1", "Rin3",
-    "Ifi27", "Cdk13", "Yae1d1", "Fbxw17", "Lman2", "Polr3g", "Pelo", "4833420G17Rik", "Nr1d2", "Dnajc9",
-    "Dennd6a", "Anxa8", "Pspc1", "Dock5", "Ppp3cc", "Xpo7", "Rb1", "Slc25a30", "Stk24", "Rai14",
-    "Efr3a", "Polr3h", "Fam19a5", "Pim3", "Scaf11", "Rarg", "Srl", "Cdc45", "Cpox", "Prdm15",
-    "C2cd2", "Msln", "Cd320", "Vars", "Polh", "Dnph1", "Mrps10", "Myl12b", "Prepl", "Ctnna1",
-    "Snx2", "Dctn4", "Malt1", "Spire1", "BC031181", "Ighmbp2", "Nudt8", "Brms1", "AI837181", "Ppp1r14b",
-    "Cyb561a3", "Tmem109", "Npm3", "Sfr1", "Zdhhc6", "2010204K13Rik", "Wdr45", "Jade3", "Araf", "Atp11c",
-    "1110012L19Rik", "Vma21", "Las1l", "Gla", "Apex2", "Sat1", "Mbtps2"
-      ]
   }
 }
