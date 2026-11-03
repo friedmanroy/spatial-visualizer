@@ -3,8 +3,11 @@ which obs column splits samples/FOVs) to a small JSON file under cache/, keyed b
 source .h5ad path, so they carry over between sessions on the same file.
 
 The cache/ folder lives in the app's own folder: the double-click launchers point it at
-the folder they sit in (even when running the latest version from GitHub, whose code lives
-elsewhere); a source checkout uses the repo root; otherwise the current directory.
+the folder they sit in; a source checkout uses the repo root; otherwise the current
+directory.
+
+Every file here is written atomically (write_json_atomic), so a crash mid-write never
+leaves a truncated file that would silently reset the saved choices.
 """
 from __future__ import annotations
 
@@ -19,6 +22,15 @@ elif os.path.exists(os.path.join(_SOURCE_ROOT, "pyproject.toml")):
     CACHE_DIR = os.path.join(_SOURCE_ROOT, "cache")
 else:
     CACHE_DIR = "cache"
+
+
+def write_json_atomic(path: str, data):
+    """Writes `data` as JSON to `path` via a temporary file, so `path` is never left half-written."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
 
 
 def _cache_path(source_path: str) -> str:
@@ -38,6 +50,8 @@ class ColorCache:
                 with open(self.path) as f:
                     self.data = json.load(f)
             except (OSError, json.JSONDecodeError):
+                self.data = {}
+            if not isinstance(self.data, dict):
                 self.data = {}
 
     def get_field_colors(self, field: str) -> dict[str, str]:
@@ -79,9 +93,7 @@ class ColorCache:
         self._save()
 
     def _save(self):
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(self.path, "w") as f:
-            json.dump(self.data, f, indent=2)
+        write_json_atomic(self.path, self.data)
 
 
 # ---- app-wide settings (not tied to one dataset) ------------------------------------
@@ -106,6 +118,4 @@ def get_last_directory() -> str | None:
 def set_last_directory(path: str):
     settings = _load_settings()
     settings["last_directory"] = path
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(_SETTINGS_PATH, "w") as f:
-        json.dump(settings, f, indent=2)
+    write_json_atomic(_SETTINGS_PATH, settings)

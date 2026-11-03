@@ -25,7 +25,7 @@ from bokeh.models import ColumnDataSource
 from bokeh.plotting import figure
 
 from . import clustering, hexbin, hover, spatial_plot
-from .color_controls import HINT_STYLE, ColorControls, section_label
+from .color_controls import HINT_STYLE, ColorControls, keep_filled, section_label
 from .colors import GRAY_RGBA
 from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
@@ -35,6 +35,8 @@ DEFAULT_N_NEIGHBORS = clustering.DEFAULT_N_NEIGHBORS
 #: UMAP is only computed in 3 dimensions (vs. up to 10 PCs) - much faster, and the
 #: extra UMAP dimensions are rarely looked at anyway
 UMAP_COMPONENTS = 3
+#: obs columns a hexagon dataset has of its own (not copied from the spatial data)
+_HEX_OWN_COLUMNS = ("sample", "n_cells")
 _EMPTY_HEADER = (
     "<i>No embedding yet: load a companion scRNA / snRNA file, or compute PCA / UMAP "
     "from the spatial data, in the panel on the left.</i>"
@@ -49,11 +51,13 @@ def _has_embedding(adata) -> bool:
 
 def _compute_embedding(dataset: Dataset, n_pcs: int, n_neighbors: int, report=clustering._no_report,
                        gene_filter: clustering.GeneFilter | None = None):
-    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy, leaving out the background genes
-    `gene_filter` names. Always overwrites any existing embedding, since this is called
-    specifically when the user (re)requests a computation."""
+    """(Re)computes obsm['X_pca']/['X_umap'] via scanpy from the log-normalized
+    expression (Dataset.expression), leaving out the background genes `gene_filter`
+    names. Always overwrites any existing embedding, since this is called specifically
+    when the user (re)requests a computation."""
     adata = dataset.adata
-    tmp = clustering.neighbors_graph(adata, n_pcs, n_neighbors, report, gene_filter)
+    tmp = clustering.neighbors_graph(dataset.expression(), n_pcs, n_neighbors, report, gene_filter)
+    adata.obsm["X_pca"] = tmp.obsm["X_pca"]
     report(f"Computing UMAP ({UMAP_COMPONENTS} components - the first one in a session also compiles, ~20 s extra)")
     sc.tl.umap(tmp, n_components=UMAP_COMPONENTS)
     adata.obsm["X_umap"] = tmp.obsm["X_umap"]
@@ -122,6 +126,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width",
         description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
     )
+    keep_filled(n_pcs_input, n_neighbors_input, hex_width)
     compute_hint = pn.pane.HTML(
         "<b>Hexagons</b>: one point per hexagonal bin of the spatial data (its spots' mean "
         "expression) - for sub-cellular data such as Xenium or Open-ST, and much faster on "
@@ -246,6 +251,10 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         # its hexagons (which then get the new field too).
         emb = state.embedding
         if emb is not None and emb.hex_source is not None and emb.hex_source[0] is ds:
+            # Fields gone from the spatial data (e.g. cell types of a recomputed clustering) go here too.
+            for stale in [c for c in emb.adata.obs.columns
+                          if c not in _HEX_OWN_COLUMNS and c not in ds.adata.obs.columns]:
+                emb.remove_field(stale)
             _copy_field(emb, field)
             controls.refresh_field_options(field)
         elif ds is emb:

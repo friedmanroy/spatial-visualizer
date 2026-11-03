@@ -76,13 +76,15 @@ _RAW_CHECK_SAMPLE = 100_000
 
 
 def looks_like_raw_counts(adata) -> bool:
-    """True if .X holds non-negative whole numbers (judged on a sample of its values),
-    i.e. raw counts that still need normalizing. Normalized / log1p data has fractions."""
+    """True if .X holds non-negative whole numbers (judged on a random sample of its
+    stored values, not just the first rows'), i.e. raw counts that still need
+    normalizing. Normalized / log1p data has fractions."""
     X = adata.X
     values = X.data if sp.issparse(X) else np.asarray(X).ravel()
-    values = values[:_RAW_CHECK_SAMPLE]
     if values.size == 0:
         return False
+    if values.size > _RAW_CHECK_SAMPLE:
+        values = values[np.random.default_rng(0).choice(values.size, _RAW_CHECK_SAMPLE, replace=False)]
     return bool(np.all(values >= 0) and np.all(values == np.round(values)))
 
 
@@ -98,18 +100,28 @@ def normalize_if_raw(adata) -> bool:
 
 
 def normalize_keeping_counts(adata):
-    """normalize_total + log1p on .X (whatever it holds), returning the values from
-    before - kept so hexagonal bins can sum raw counts before normalizing (hex_profiles).
-    A sparse .X keeps only a copy of its values; the index arrays are shared."""
+    """normalize_total + log1p on .X (whatever it holds), returning a copy of the values
+    from before - kept so hexagonal bins can sum raw counts before normalizing
+    (hex_profiles). A full copy: sharing a sparse matrix's index arrays would let an
+    in-place sort_indices / eliminate_zeros on either one silently corrupt the other."""
     X = adata.X
     if sp.issparse(X):
         X = adata.X = sp.csr_matrix(X)
-        counts = sp.csr_matrix((X.data.copy(), X.indices, X.indptr), shape=X.shape)
+        counts = X.copy()
     else:
         counts = np.array(X, copy=True)
     sc.pp.normalize_total(adata)
     sc.pp.log1p(adata)
     return counts
+
+
+def log_normalized(X, like) -> ad.AnnData:
+    """A new AnnData holding `X` (raw counts, rows of `like`'s cells; modified in place,
+    so pass a copy) after normalize_total + log1p, with `like`'s genes (var)."""
+    out = ad.AnnData(X, var=like.var.copy())
+    sc.pp.normalize_total(out)
+    sc.pp.log1p(out)
+    return out
 
 
 def _no_report(text: str):
@@ -178,15 +190,23 @@ def _as_categorical(labels: np.ndarray) -> pd.Categorical:
     return pd.Categorical(labels, categories=sorted(present, key=int))
 
 
+def _drop_derived_fields(dataset, col: str):
+    """Removes the cell-type fields made from an earlier clustering stored under `col`,
+    which would otherwise go on describing the old clusters."""
+    for derived in (f"{col}_celltype", f"{col}_celltype_confidence"):
+        dataset.remove_field(derived)
+
+
 def run_leiden(dataset, resolution: float, n_pcs: int = DEFAULT_N_PCS,
                n_neighbors: int = DEFAULT_N_NEIGHBORS, report=_no_report,
                gene_filter: GeneFilter | None = None) -> str:
-    """Leiden-clusters the dataset's individual cells and stores the labels as a
-    categorical obs column, returning that column's name (one per resolution, so
-    different runs can be compared)."""
-    adata = dataset.adata
+    """Leiden-clusters the dataset's individual cells (their log-normalized expression,
+    Dataset.expression) and stores the labels as a categorical obs column, returning that
+    column's name (one per resolution, so different runs can be compared)."""
     col = leiden_column_name(resolution)
-    adata.obs[col] = _as_categorical(_leiden_labels(adata, resolution, n_pcs, n_neighbors, report, gene_filter))
+    labels = _leiden_labels(dataset.expression(), resolution, n_pcs, n_neighbors, report, gene_filter)
+    _drop_derived_fields(dataset, col)
+    dataset.adata.obs[col] = _as_categorical(labels)
     dataset.hex_clusterings.pop(col, None)
     return col
 
@@ -270,6 +290,7 @@ def run_leiden_on_hexbins(dataset, width_factor: float, resolution: float,
     # Cells outside every sample (missing sample value) stay unlabeled.
     cell_labels = bins_to_cells(np.asarray(bin_labels, dtype=object), binnings, adata.n_obs)
     col = leiden_column_name(resolution, width_factor)
+    _drop_derived_fields(dataset, col)
     adata.obs[col] = _as_categorical(cell_labels)
     dataset.hex_clusterings[col] = width_factor
     return col, bins.n_obs

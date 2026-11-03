@@ -2,6 +2,10 @@
 between them."""
 from __future__ import annotations
 
+import sys
+import traceback
+import weakref
+
 import panel as pn
 
 from .embedding_page import build_embedding_page
@@ -15,6 +19,18 @@ from .markers_page import build_markers_page
 from .pathways_page import build_pathways_page
 from .spatial_page import build_spatial_page
 from .state import AppState
+
+# Each browser tab (Bokeh document) shows uncaught errors in its own error dialog.
+# pn.config.exception_handler is global, so it dispatches on the document whose callback raised.
+_error_handlers: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _dispatch_error(exc: BaseException):
+    handler = _error_handlers.get(pn.state.curdoc) if pn.state.curdoc is not None else None
+    if handler is not None:
+        handler(exc)
+    else:
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
 
 
 def build() -> pn.viewable.Viewable:
@@ -47,6 +63,8 @@ def build() -> pn.viewable.Viewable:
     # shows this instead of leaving the page silently frozen; closing it exits the
     # process, since a callback failing partway through is treated as unrecoverable.
     error_overlay, show_error = build_error_dialog()
-    pn.config.exception_handler = show_error
+    if pn.state.curdoc is not None:
+        _error_handlers[pn.state.curdoc] = show_error
+    pn.config.exception_handler = _dispatch_error
 
     return pn.Column(root, state.de_dialog.layout, state.busy.layout, error_overlay, sizing_mode="stretch_both")

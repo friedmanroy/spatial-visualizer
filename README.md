@@ -73,11 +73,12 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   with their name, and can be renamed, recolored or deleted. Membership is tested against every
   cell of the sample, so it works the same over hexagonal bins or zoomed-in cells. **Gray out
   cells outside the regions** keeps any coloring only inside them, and **Save as field** adds
-  them as a `regions` field to color by (here and on the scRNA / snRNA tab). Regions are saved
-  with the file in `cache/` and come back the next time it's opened.
+  them as a `regions` field to color by (here and on the scRNA / snRNA tab; `regions_2` if the
+  file already has a `regions` column). Regions are saved with the file in `cache/` and come
+  back the next time it's opened with the same sample/FOV column.
 - **Differential expression between regions** - compare each region with the rest of its
   sample (the default), each region with all the other regions, or region A with region B,
-  using scanpy's `rank_genes_groups` (Wilcoxon or t-test) on the normalized data, with
+  using scanpy's `rank_genes_groups` (Wilcoxon or t-test) on the log-normalized data, with
   background genes left out and at most 20,000 random cells per side. The results open in a
   pop-up with a tab per comparison: a volcano plot (click a gene to color the tissue by it), a
   searchable, sortable gene table (log2 FC, adjusted p-value, % of cells expressing on each
@@ -107,7 +108,8 @@ For people who just want to use the app. No Python, no terminal, no admin rights
 3. A small text window opens and the app appears in your browser.
    - The **first launch** downloads everything it needs and can take a few minutes. Later
      launches are much faster.
-   - Closing the browser tab stops the app.
+   - Closing the browser tab stops the app (about half a minute later, so reloading the page
+     doesn't). If another copy is already running, the new one opens on a different port.
 
 **First time on a Mac:** macOS may say the file "cannot be opened because it is from an
 unidentified developer". Right-click (or Control-click) the file, choose **Open**, then click
@@ -185,7 +187,8 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
    PCA/UMAP embedding directly from the spatial data on demand (this can take a while for large
    datasets, hence "on demand" rather than automatic).
 
-Closing the browser tab shuts the server down automatically.
+Closing the last browser tab shuts the server down automatically (after a ~30 s grace
+period, so a page reload doesn't).
 
 ## Data
 

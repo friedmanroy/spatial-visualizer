@@ -42,7 +42,8 @@ MIN_MARKERS = 3
 #: PanglaoDB markers detected in fewer than this fraction of that cell type's cells are
 #: left out (the threshold decoupler's own cell-type tutorial uses)
 MIN_SENSITIVITY = 0.5
-#: a suggestion needs a ULM p-value below this, else the cluster is "Unknown"
+#: a suggestion needs a ULM p-value below this, else the cluster is "Unknown" (decoupler
+#: already adjusts each cluster's p-values across the cell types tried, Benjamini-Hochberg)
 MAX_PVALUE = 0.05
 #: how many candidates per cluster are kept for display
 N_CANDIDATES = 3
@@ -77,7 +78,9 @@ def load_markers() -> pd.DataFrame:
             "the first time; after that they're kept in cache/)."
         ) from exc
     os.makedirs(cache.CACHE_DIR, exist_ok=True)
-    markers.to_csv(_MARKERS_CACHE, index=False)
+    tmp = _MARKERS_CACHE + ".tmp"  # never leave a truncated table behind
+    markers.to_csv(tmp, index=False, compression="gzip")
+    os.replace(tmp, _MARKERS_CACHE)
     return markers
 
 
@@ -152,11 +155,7 @@ def load_custom_markers() -> dict:
 
 
 def save_custom_markers(data: dict):
-    os.makedirs(cache.CACHE_DIR, exist_ok=True)
-    tmp = CUSTOM_MARKERS_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, CUSTOM_MARKERS_PATH)  # never leave a half-written file behind
+    cache.write_json_atomic(CUSTOM_MARKERS_PATH, data)
 
 
 @dataclass
@@ -253,6 +252,10 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     clusters = adata.obs[cluster_col].astype("category")
     names = [str(c) for c in clusters.cat.categories]
     codes = clusters.cat.codes.to_numpy()
+    sizes = np.bincount(codes[codes >= 0], minlength=len(names))
+    if (sizes > 0).sum() < 2:
+        raise ValueError("Cell typing compares the clusters with each other, so it needs at least 2 "
+                         "clusters - try a higher Leiden resolution.")
 
     # PanglaoDB uses human symbols; match them to this dataset's own spelling (case-
     # insensitively, which also covers most mouse symbols) and drop unmeasured ones.
@@ -272,7 +275,9 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
         units, binnings = clustering.hex_profiles(dataset, width, genes)
         unit_codes = clustering.cells_to_bins(codes, binnings)
     else:
-        units, unit_codes = ad.AnnData(adata.X[:, [adata.var_names.get_loc(g) for g in genes]]), codes
+        # Log-normalized expression even where .X is kept as raw counts (Dataset.expression).
+        expr = dataset.expression()
+        units, unit_codes = ad.AnnData(expr.X[:, [adata.var_names.get_loc(g) for g in genes]]), codes
     if units is not None:
         units.var_names = genes
         background = clustering.background_genes(units, gene_filter)
@@ -297,10 +302,12 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     means = pd.DataFrame(_cluster_means(units.X, unit_codes, len(names)), index=names, columns=genes)
     spread = means.std(axis=0)
     means = means.loc[:, spread > 0]
+    if means.shape[1] == 0:
+        raise ValueError("None of the measured marker genes differs between the clusters, so "
+                         "there's nothing to tell cell types apart by.")
     scaled = (means - means.mean(axis=0)) / spread[means.columns]
     scores, pvalues = dc.mt.ulm(data=scaled, net=net, tmin=MIN_MARKERS)
 
-    sizes = np.bincount(codes[codes >= 0], minlength=len(names))
     n_bins = np.bincount(unit_codes[unit_codes >= 0], minlength=len(names)) if width is not None else None
     calls = []
     for i, name in enumerate(names):

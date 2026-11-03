@@ -1,9 +1,11 @@
 """Differential expression between regions drawn on the Spatial tab, with scanpy's
 `sc.tl.rank_genes_groups`.
 
-Works on the cells' .X, which the landing page normalizes + log1p's when asked to (the
-default for raw counts). If .X wasn't log1p'd (see is_log1p), the compared cells are
-log1p'd here first, so the log fold changes are meaningful either way. Background genes are left
+Works on the cells' log-normalized expression: .X, which the landing page normalizes +
+log1p's when asked to (the default for raw counts) - or, for samples so large that only
+their hexagons were normalized, Dataset.expression()'s normalized copy. If the
+expression wasn't log1p'd (see is_log1p), the compared cells are log1p'd here first, so
+the log fold changes are meaningful either way. Background genes are left
 out, as everywhere else in the app.
 
 Spots are sparse (often only tens of UMIs), so each side can instead be compared as
@@ -31,8 +33,9 @@ METHODS = {"Wilcoxon rank-sum": "wilcoxon", "t-test (Welch)": "t-test"}
 SPOTS = "Individual spots"
 HEXAGONS = "Hexagons (spots pooled per bin)"
 UNITS = (HEXAGONS, SPOTS)
-#: a hexagon joins a side only if that side holds at least this share of its spots, so
-#: slivers cut off by a region's edge (nearly as sparse as single spots) are left out
+#: a hexagon joins a side only if that side holds more than this share of its spots, so
+#: slivers cut off by a region's edge (nearly as sparse as single spots) are left out -
+#: and a hexagon split exactly in half never joins both sides
 MIN_HEX_SHARE = 0.5
 #: each side of a comparison is a random sample of at most this many cells
 DEFAULT_MAX_CELLS = 20_000
@@ -129,14 +132,13 @@ def comparisons(regions, mode: str, a: str | None = None, b: str | None = None) 
 
 
 def is_log1p(dataset, X) -> bool:
-    """Whether the expression `X` (rows of dataset.adata.X) is already log1p'd: the app
-    normalized each spot, scanpy's log1p marked it, or its values look logged (whole numbers
-    are counts; values past LOG1P_MAX are unlogged). Negative values (scaled data) count as
-    logged, since log1p can't apply to them."""
-    if dataset.normalized_spots:
+    """Whether the expression `X` (rows of dataset.expression().X) is already log1p'd:
+    the app normalized it (each spot's .X, or expression()'s copy where only hexagons
+    were), scanpy's log1p marked it, or its values look logged (whole numbers are counts;
+    values past LOG1P_MAX are unlogged). Negative values (scaled data) count as logged,
+    since log1p can't apply to them."""
+    if dataset.counts is not None:
         return True
-    if dataset.counts is not None:  # only hexagons get normalized: .X is the raw counts
-        return False
     if "log1p" in dataset.adata.uns:
         return True
     values = X.data if sp.issparse(X) else np.asarray(X).ravel()
@@ -162,7 +164,7 @@ def _hex_profiles(dataset, cells: np.ndarray, width_factor: float):
         binning = dataset.hex_binning(sid, width_factor)
         bins = binning.cell_bin[np.searchsorted(idx, side)]
         uniq, inverse, n_in = np.unique(bins, return_inverse=True, return_counts=True)
-        kept = n_in >= MIN_HEX_SHARE * binning.counts[uniq]
+        kept = n_in > MIN_HEX_SHARE * binning.counts[uniq]
         rows = kept[inverse]
         if not rows.any():
             continue
@@ -209,7 +211,7 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
                              f"(has {g_total} and {r_total}).")
         g = _subsample(group_cells, max_cells, rng)
         r = _subsample(ref_cells, max_cells, rng)
-        X = dataset.adata.X[np.concatenate([g, r])][:, keep]
+        X = dataset.expression().X[np.concatenate([g, r])][:, keep]
         logged = is_log1p(dataset, X)
     else:
         unit = "hexagons"
@@ -218,7 +220,7 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
         g_total = 0 if g_X is None else g_X.shape[0]
         r_total = 0 if r_X is None else r_X.shape[0]
         if g_total < 3 or r_total < 3:
-            raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 hexagons at least "
+            raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 hexagons more than "
                              f"half inside it (has {g_total} and {r_total}) - try narrower bins, or "
                              f"individual spots.")
         g = _subsample(np.arange(g_total), max_cells, rng)

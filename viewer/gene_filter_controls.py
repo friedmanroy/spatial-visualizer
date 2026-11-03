@@ -10,7 +10,7 @@ import numpy as np
 import panel as pn
 
 from . import clustering
-from .color_controls import HINT_STYLE
+from .color_controls import HINT_STYLE, keep_filled
 
 #: how many matching gene names the summary lists before "..."
 _N_SHOWN = 4
@@ -32,6 +32,7 @@ class GeneFilterControls:
         self._var_names = None
         # Called with the new clustering.GeneFilter whenever the choice changes.
         self.listeners: list = []
+        keep_filled(self.max_detected)
         self.broad.param.watch(lambda e: setattr(self.max_detected, "visible", e.new), "value")
         for w in (self.mito, self.ribo):
             w.param.watch(lambda e: self._update_info(), "value")

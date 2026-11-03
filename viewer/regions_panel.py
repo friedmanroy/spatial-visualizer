@@ -40,6 +40,9 @@ class RegionsPanel:
         self.on_change = on_change
         self.add_field = add_field
         self.regions = regions_mod.Regions(self.dataset)
+        # Chosen once, before any save: the column the regions are saved to never
+        # overwrites one that came with the file.
+        self.field_name = regions_mod.field_name(self.dataset.adata)
         self.regions.listeners.append(self._on_regions_change)
         state.de_dialog.on_color_genes = color_by_genes
 
@@ -84,7 +87,7 @@ class RegionsPanel:
         self.only_regions.param.watch(lambda e: self.on_change(), "value")
         self.show_outlines.param.watch(self._on_show_outlines, "value")
         self.save_btn = pn.widgets.Button(
-            name=f"Save as field '{regions_mod.FIELD_NAME}'", sizing_mode="stretch_width", margin=(5, 5),
+            name=f"Save as field '{self.field_name}'", sizing_mode="stretch_width", margin=(5, 5),
             description="Adds the regions as a field to color by (here and on the scRNA / snRNA tab)",
         )
         self.clear_btn = pn.widgets.Button(name="Clear all", button_type="light", width=110, margin=(5, 5))
@@ -146,7 +149,7 @@ class RegionsPanel:
         if width is not None:
             self.de_unit_hint.object = (
                 f"Spots are sparse, so hexagons pool each side's spots per bin as drawn ({width:g} cell "
-                f"spacings wide; only bins at least {de.MIN_HEX_SHARE:.0%} on that side): fewer, but much "
+                f"spacings wide; only bins more than {de.MIN_HEX_SHARE:.0%} on that side): fewer, but much "
                 f"richer profiles, closer to single cells.")
 
     def _de_hex_width(self) -> float | None:
@@ -263,7 +266,7 @@ class RegionsPanel:
         self._outlines.visible = self._halos.visible = self._labels.visible = event.new
 
     def _on_save(self, event):
-        col = regions_mod.FIELD_NAME
+        col = self.field_name
         adata = self.dataset.adata
         adata.obs[col] = self.regions.as_field()
         adata.uns[f"{col}_colors"] = [r.color for r in self.regions.items]

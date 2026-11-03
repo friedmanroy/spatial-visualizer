@@ -14,7 +14,7 @@ from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
 from . import clustering, hexbin, hover, spatial_plot
 from .state import top_k_per_row
-from .color_controls import ColorControls
+from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY_RGBA
@@ -240,12 +240,11 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return get_geometry(sample_select.value)[0]
 
     def current_colors(idx: np.ndarray, binning) -> np.ndarray:
-        if binning is not None:
-            colors = controls.compute_colors(idx, binning)
-            colors = colors if len(colors) else np.full(binning.n_bins, GRAY_RGBA)
-        else:
-            full_colors = controls.compute_colors()
-            colors = full_colors[idx] if len(full_colors) else np.full(len(idx), GRAY_RGBA)
+        # Only the sample's cells (or bins) are colored - and gene colors scaled over
+        # them, the same way for bins and for the individual cells shown when zoomed in.
+        colors = controls.compute_colors(idx, binning)
+        if not len(colors):
+            colors = np.full(len(idx) if binning is None else binning.n_bins, GRAY_RGBA)
         return regions_panel.mask_colors(colors, idx, binning)
 
     # -- individual cells when zoomed in (hex-binned samples only) --------------------
@@ -508,6 +507,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
     )
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
+    # Before any other watcher: an emptied number box gets its last value back.
+    keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
 
     def update_leiden_target(*events):
         hexes = leiden_unit.value == clustering.HEXAGONS

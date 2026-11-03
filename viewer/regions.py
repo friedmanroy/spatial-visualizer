@@ -4,7 +4,9 @@ A region is one or more polygons (in obsm['spatial'] units) on one sample, plus 
 cells inside them. Membership is tested against every cell of the sample - not just
 what the plot happens to draw (hexagonal bins, or the zoomed-in cells) - so a region
 is always a set of real cells. Only the polygons are saved (in the dataset's cache
-file); the cells are found again when the file is next opened.
+file, with the obs column that split the samples); the cells are found again when the
+file is next opened. Regions drawn while the samples were split by another column are
+kept in the cache untouched, and come back when that column is chosen again.
 """
 from __future__ import annotations
 
@@ -16,8 +18,18 @@ from matplotlib.path import Path
 
 from .colors import default_categorical_palette
 
-#: obs column "Save as field" writes the regions to
+#: obs column "Save as field" writes the regions to (see field_name)
 FIELD_NAME = "regions"
+
+
+def field_name(adata) -> str:
+    """FIELD_NAME, or FIELD_NAME_2, _3... if the file itself already has such a column,
+    so saving the regions never overwrites the file's own data."""
+    name, i = FIELD_NAME, 1
+    while name in adata.obs.columns:
+        i += 1
+        name = f"{FIELD_NAME}_{i}"
+    return name
 
 
 @dataclass
@@ -58,10 +70,15 @@ class Regions:
         self.items: list[Region] = []
         self.listeners: list = []
         self._next_number = 1
+        # Saved regions of other sample splits: kept as they are, and saved back with ours.
+        self._other_saved: list[dict] = []
         cache = dataset.color_cache
         for saved in (cache.get_regions() if cache is not None else []):
-            if saved.get("sample") not in dataset.sample_ids:
-                continue  # drawn with another sample column, or on a sample no longer there
+            # Regions saved before the column was recorded count as drawn on the current one.
+            same_split = saved.get("sample_column", dataset.sample_col) == dataset.sample_col
+            if not same_split or saved.get("sample") not in dataset.sample_ids:
+                self._other_saved.append(saved)
+                continue
             region = Region(saved["name"], saved["sample"], saved["color"],
                             [(xs, ys) for xs, ys in saved.get("polygons", [])])
             self._update_cells(region)
@@ -156,6 +173,8 @@ class Regions:
 
     def _changed(self):
         if self.dataset.color_cache is not None:
-            self.dataset.color_cache.set_regions([r.to_json() for r in self.items])
+            column = self.dataset.sample_col
+            self.dataset.color_cache.set_regions(
+                [{**r.to_json(), "sample_column": column} for r in self.items] + self._other_saved)
         for listener in self.listeners:
             listener()

@@ -16,19 +16,33 @@ from . import spatial_plot
 
 #: how many recent top-genes results Dataset.top_genes keeps
 _TOP_GENES_CACHE_SIZE = 8
+#: hexagonal binnings of at most this many bin widths are kept (each holds per-cell
+#: arrays for every sample it was made for); the least recently used width goes first
+_BINNING_WIDTHS_KEPT = 3
+#: top_k_per_row works on chunks of at most about this many values (rows x padded width)
+_TOP_K_BUDGET = 16_000_000
+#: the most variable genes of spots kept as raw counts are ranked on this many random spots
+_HVG_SAMPLE = 100_000
 
 
-def top_k_per_row(X, k: int, chunk: int = 10_000) -> np.ndarray:
+def top_k_per_row(X, k: int, exclude: np.ndarray | None = None) -> np.ndarray:
     """(n_rows, k) column indices of each row's k largest values, largest first; -1
-    where a row has fewer than k positive values. Sparse rows are padded to the longest
-    row's nonzero count (per chunk) rather than densified over all columns."""
+    where a row has fewer than k positive values. Columns where the boolean `exclude`
+    is True are never picked. Sparse rows are padded to the longest row's nonzero count
+    rather than densified over all columns, and rows are taken in chunks sized so that
+    padding stays within _TOP_K_BUDGET values (summed hexagons are nearly dense)."""
     n = X.shape[0]
     out = np.full((n, k), -1, dtype=np.int32)
+    if sp.issparse(X):
+        X = sp.csr_matrix(X)
+        width = max(int(np.diff(X.indptr).max(initial=0)), k)
+    else:
+        width = max(X.shape[1], k)
+    chunk = max(1, _TOP_K_BUDGET // width)
     for start in range(0, n, chunk):
         block = X[start:start + chunk]
         m = block.shape[0]
         if sp.issparse(block):
-            block = sp.csr_matrix(block)
             lens = np.diff(block.indptr)
             width = max(int(lens.max(initial=0)), k)
             vals = np.full((m, width), -np.inf, dtype=np.float32)
@@ -37,8 +51,12 @@ def top_k_per_row(X, k: int, chunk: int = 10_000) -> np.ndarray:
             pos = np.arange(block.nnz) - np.repeat(block.indptr[:-1], lens)
             vals[rows, pos] = block.data
             cols[rows, pos] = block.indices
+            if exclude is not None:
+                vals[(cols >= 0) & exclude[np.maximum(cols, 0)]] = -np.inf
         else:
-            vals = np.asarray(block, dtype=np.float32)
+            vals = np.array(block, dtype=np.float32)  # a copy: excluded columns get overwritten
+            if exclude is not None:
+                vals[:, exclude] = -np.inf
             cols = np.broadcast_to(np.arange(vals.shape[1], dtype=np.int32), vals.shape)
             if vals.shape[1] < k:
                 pad = k - vals.shape[1]
@@ -71,6 +89,8 @@ class Dataset:
         self.counts = None
         # Whether the app normalized each cell / spot's .X (not just the hexagons').
         self.normalized_spots = False
+        # Log-normalized copy of .X while .X stays raw counts (see expression()).
+        self._lognorm = None
         self.sample_col: str | None = None
         self.sample_ids: list[str] = []
         self._sample_indices: dict[str, np.ndarray] = {}
@@ -120,11 +140,24 @@ class Dataset:
         if self.allowed_fields is not None:
             self.allowed_fields.add(colname)
 
-    def field_options(self, exclude: tuple[str, ...] = ()) -> list[str]:
-        options = fields_mod.list_field_options(self.adata, exclude=exclude)
+    def remove_field(self, colname: str):
+        """Drops an obs column made inside the viewer (e.g. cell types of a clustering
+        that was just recomputed), along with everything derived from it."""
+        if colname in self.adata.obs.columns:
+            del self.adata.obs[colname]
+        self._field_cache.pop(colname, None)
+        self.celltype_results.pop(colname, None)
         if self.allowed_fields is not None:
-            options = [o for o in options if o in self.allowed_fields]
-        return options
+            self.allowed_fields.discard(colname)
+
+    def field_options(self, exclude: tuple[str, ...] = ()) -> list[str]:
+        """obs columns offered for 'color by', alphabetically: those (among
+        allowed_fields, if set) that aren't unusable. Uses the cached classification."""
+        return sorted(
+            c for c in self.adata.obs.columns
+            if c not in exclude and (self.allowed_fields is None or c in self.allowed_fields)
+            and self.classify(c).kind != "unusable"
+        )
 
     # -- sample / FOV splitting -----------------------------------------------
     def set_sample_column(self, colname: str | None):
@@ -161,12 +194,36 @@ class Dataset:
         """Hexagonal bins `width_factor` cell spacings wide over one sample's cells
         (shared by the Spatial view and hexagon-level Leiden clustering)."""
         key = (sample_id, width_factor)
-        if key not in self._binning_cache:
+        if key in self._binning_cache:
+            self._binning_cache[key] = self._binning_cache.pop(key)  # most recently used last
+        else:
+            widths = list(dict.fromkeys(w for _, w in self._binning_cache))  # least recent first
+            if width_factor not in widths and len(widths) >= _BINNING_WIDTHS_KEPT:
+                for old in [k for k in self._binning_cache if k[1] == widths[0]]:
+                    del self._binning_cache[old]
             width = width_factor * self.sample_lattice(sample_id).spacing
             self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
         return self._binning_cache[key]
 
     # -- gene expression -------------------------------------------------------
+    @property
+    def raw_spots(self) -> bool:
+        """.X still holds raw counts because the app normalized only the hexagons
+        (samples too large to normalize spot by spot)."""
+        return self.counts is not None and not self.normalized_spots
+
+    def expression(self):
+        """An AnnData with this dataset's genes whose .X is log-normalized expression:
+        the dataset's own AnnData, or - while .X stays raw counts (raw_spots) - a
+        normalize_total + log1p copy of it, made the first time it's needed and kept
+        (it doubles the memory .X takes). For per-spot analyses: Leiden on cells,
+        PCA / UMAP of cells, pathway scores, differential expression of spots."""
+        if not self.raw_spots:
+            return self.adata
+        if self._lognorm is None:
+            self._lognorm = clustering.log_normalized(self.adata.X.copy(), self.adata)
+        return self._lognorm
+
     def match_gene(self, gene: str) -> str | None:
         """Resolves a gene symbol to this dataset's actual var_names spelling,
         matching case-insensitively so mouse (Col1a1) and human (COL1A1) gene
@@ -183,7 +240,15 @@ class Dataset:
         leaving out background genes. Computed with inplace=False so it never touches
         var['highly_variable'], which PCA/clustering use with their own (larger) gene count."""
         if self._variable_ranking is None:
-            hvg = sc.pp.highly_variable_genes(self.adata, flavor="seurat", inplace=False)
+            adata = self.adata
+            if self.raw_spots:  # dispersions need log-normalized data; a sample of the spots is plenty
+                if self._lognorm is not None:
+                    adata = self._lognorm
+                else:
+                    n = adata.n_obs
+                    rows = np.sort(np.random.default_rng(0).choice(n, min(n, _HVG_SAMPLE), replace=False))
+                    adata = clustering.log_normalized(adata.X[rows], adata)
+            hvg = sc.pp.highly_variable_genes(adata, flavor="seurat", inplace=False)
             dispersion = hvg["dispersions_norm"].to_numpy(dtype=float)
             ranked = np.argsort(-np.nan_to_num(dispersion, nan=-np.inf), kind="stable")
             self._variable_ranking = ranked[np.isfinite(dispersion[ranked])]
@@ -248,20 +313,21 @@ class Dataset:
         Recent results are cached, so recoloring doesn't recompute them."""
         key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning),
                self.gene_filter)
-        if key not in self._top_genes_cache:
+        # The binning is kept with the result: binnings can be evicted (hex_binning), and
+        # a new one may then reuse the old one's id.
+        cached = self._top_genes_cache.get(key)
+        if cached is None or cached[0] is not binning:
             # Normalizing a bin's summed counts doesn't change their order, so ranking
             # the sums ranks the genes as the normalized bin would.
             source = self.counts if binning is not None and self.counts is not None else self.adata.X
             X = source if rows is None else source[rows]
-            background = self.background_mask()
-            if background.any():  # zero those genes' columns
-                X = X @ sp.diags((~background).astype(np.float32))
             if binning is not None:
                 X = (binning.sum_matrix if self.counts is not None else binning.mean_matrix) @ X
+            self._top_genes_cache.pop(key, None)
             if len(self._top_genes_cache) >= _TOP_GENES_CACHE_SIZE:
                 self._top_genes_cache.pop(next(iter(self._top_genes_cache)))
-            self._top_genes_cache[key] = top_k_per_row(X, k)
-        return self._top_genes_cache[key]
+            cached = self._top_genes_cache[key] = (binning, top_k_per_row(X, k, exclude=self.background_mask()))
+        return cached[1]
 
 
 class AppState:

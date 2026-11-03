@@ -1,16 +1,14 @@
 #!/bin/bash
 # Double-click to start the Spatial Transcriptomics Visualizer (macOS).
 #
-# If the GitHub repository is reachable (i.e. public), each launch runs the latest
-# version from it. Otherwise (private repo, or no internet) it runs the copy of the app
-# in this folder. Either way uv provides a private Python + packages - nothing is
-# installed system-wide and no admin rights are needed.
+# Runs the copy of the app in this folder. uv provides a private Python + packages -
+# nothing is installed system-wide and no admin rights are needed.
 
 PYTHON_VERSION="3.13"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-# Saved colors/fields stay in this folder whether the online or the local copy runs.
+# Saved colors/fields/regions are kept in this folder's cache/.
 export SPATIAL_VISUALIZER_CACHE_DIR="$HERE/cache"
 
 fail() {
@@ -28,7 +26,7 @@ fi
 
 echo "Starting the Spatial Transcriptomics Visualizer."
 echo "The first launch downloads everything it needs and can take a few minutes."
-echo "The app opens in your browser. Closing the browser tab stops it."
+echo "The app opens in your browser. Closing the browser tab stops it (after about 30 s)."
 echo
 
 echo "Using the version in this folder."

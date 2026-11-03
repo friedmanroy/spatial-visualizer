@@ -16,7 +16,7 @@ import os
 import numpy as np
 import scanpy as sc
 
-from .cache import CACHE_DIR
+from .cache import CACHE_DIR, write_json_atomic
 
 CUSTOM_PATHWAYS_PATH = os.path.join(CACHE_DIR, "custom_pathways.json")
 CUSTOM_SOURCE = "Custom (added in the viewer)"
@@ -45,11 +45,7 @@ def load_custom_pathways() -> dict:
 
 
 def _write_custom_pathways(custom: dict):
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    tmp = CUSTOM_PATHWAYS_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(custom, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, CUSTOM_PATHWAYS_PATH)  # never leave a half-written file behind
+    write_json_atomic(CUSTOM_PATHWAYS_PATH, custom)
 
 
 def save_custom_pathway(name: str, genes: list[str], description: str = ""):
@@ -79,11 +75,13 @@ def score_pathway(dataset, pathway_name: str, pathways: dict) -> np.ndarray | No
     if len(genes) < 2:
         cache[pathway_name] = None
         return None
-    adata = dataset.adata
+    # Log-normalized expression, never adata.raw (score_genes' default when there is
+    # one): the genes were matched against .var_names, and .raw often holds raw counts.
+    adata = dataset.expression()
     score_col = f"_pathway_score_{pathway_name}"
     sc.tl.score_genes(
         adata, gene_list=genes, score_name=score_col,
-        ctrl_size=min(50, max(len(genes), 10)), random_state=0,
+        ctrl_size=min(50, max(len(genes), 10)), random_state=0, use_raw=False,
     )
     score = np.asarray(adata.obs[score_col].to_numpy(), dtype=np.float64)
     del adata.obs[score_col]

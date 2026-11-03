@@ -14,6 +14,7 @@ import numpy as np
 import panel as pn
 
 from . import colors as colors_mod
+from . import fields as fields_mod
 from . import histogram as histogram_mod
 from . import hover
 from . import pathways as pathways_mod
@@ -42,6 +43,8 @@ _DROPDOWN_PROMPT = f"or pick a top-{_N_DROPDOWN_GENES} variable gene"
 #: left inset shared by every top-level row in the sidebar, so fields/buttons/
 #: checkboxes all start flush against the same edge instead of drifting per widget.
 _INSET = 1
+#: how many hexagon value arrays of other samples (for the histograms) are kept
+_BIN_VALUES_CACHE_SIZE = 128
 #: Side length (px) of each category's color swatch button, and the vertical space
 #: (px) left between neighbouring swatches in the category list.
 _SWATCH_SIZE = 18
@@ -67,6 +70,24 @@ def section_label(text: str) -> pn.pane.HTML:
     """Small bold heading above a group of controls (e.g. a toggle), so each group
     says what it's for."""
     return pn.pane.HTML(f"<b>{text}</b>", margin=(8, 5, 0, _INSET + 3), styles={"font-size": "13px"})
+
+
+def keep_filled(*widgets):
+    """Number inputs can be emptied (value None), which the code reading them doesn't
+    expect: an emptied box gets its previous value back. Call right after creating the
+    widgets, so this watcher runs before any other."""
+    def restore(event):
+        if event.new is None and event.old is not None:
+            widget = event.obj
+            widget.value = event.old
+            # Panel doesn't echo a value back to the browser while it's handling that same
+            # change from it, so the box would still look empty: re-send it on the next tick.
+            doc = pn.state.curdoc
+            if doc is not None and doc.session_context is not None:
+                doc.add_next_tick_callback(lambda: widget.param.trigger("value"))
+
+    for w in widgets:
+        w.param.watch(restore, "value")
 
 
 def _pathway_options(names: list[str]) -> dict[str, str]:
@@ -112,6 +133,11 @@ class ColorControls:
         self.value_picker_box = pn.Column(sizing_mode="stretch_both", margin=0)
         self._value_checkboxes: dict[str, pn.widgets.Checkbox] = {}
         self._value_rows: dict[str, pn.Row] = {}  # category -> its swatch + checkbox row
+        # Fields with more than fields.CHECKBOX_MAX categories get this searchable
+        # multi-select instead (empty = every category shown).
+        self._multi: pn.widgets.MultiChoice | None = None
+        # Other samples' hexagon values for the histograms: key -> (cell values used, bin values).
+        self._bin_values_cache: dict = {}
         # Rebuilding N checkbox/color-picker widgets from scratch is the expensive part
         # of switching fields (each one is its own Bokeh model that has to be created
         # and shipped to the browser) - caching the built picker per field means
@@ -210,6 +236,7 @@ class ColorControls:
         # Bokeh "document lock" error. `pn.io.hold()` batches all of this into one patch.
         with pn.io.hold():
             self._value_picker_cache = {}  # a new/changed dataset invalidates cached pickers
+            self._bin_values_cache = {}
             options = dataset.field_options()
             self.field_select.options = options
             if options and self.field_select.value not in options:
@@ -318,15 +345,18 @@ class ColorControls:
         field = self.field_select.value
         if dataset is None or not field:
             self._value_checkboxes = {}
+            self._multi = None
             self.value_picker_box[:] = []
             self.field_summary.object = ""
             return
 
         cached = self._value_picker_cache.get(field)
         if cached is not None:
-            widget, checkboxes, rows = cached
+            widget, checkboxes, rows, multi = cached
             self._value_checkboxes = checkboxes
             self._value_rows = rows
+            self._multi = multi
+            self._show_select_buttons()
             self.value_picker_box[:] = [widget]
             self.update_category_counts()
             return
@@ -334,6 +364,23 @@ class ColorControls:
         spec = dataset.classify(field)
         self._value_checkboxes = {}
         rows = {}
+        if len(spec.categories) > fields_mod.CHECKBOX_MAX:
+            # A checkbox + color swatch each would be thousands of widgets: a searchable
+            # multi-select of the categories to show instead (their colors stay the defaults).
+            self._multi = pn.widgets.MultiChoice(
+                name="Show only these (type to search; empty = all)", options=list(spec.categories),
+                value=[], sizing_mode="stretch_width", margin=(5, 5, 5, _INSET),
+            )
+            self._multi.param.watch(self._fire, "value")
+            widget = pn.Column(self._multi, sizing_mode="stretch_width", margin=0)
+            self._value_rows = rows
+            self._value_picker_cache[field] = (widget, self._value_checkboxes, rows, self._multi)
+            self._show_select_buttons()
+            self.value_picker_box[:] = [widget]
+            self.update_category_counts()
+            return
+        self._multi = None
+        self._show_select_buttons()
         for cat in spec.categories:
             color = spec.colors.get(cat, GRAY)
             # The swatch itself *is* the color control - clicking it opens the
@@ -353,16 +400,20 @@ class ColorControls:
         self._value_rows = rows
         widget = pn.Column(*rows.values(), scroll=True, sizing_mode="stretch_both", margin=0)
 
-        self._value_picker_cache[field] = (widget, self._value_checkboxes, rows)
+        self._value_picker_cache[field] = (widget, self._value_checkboxes, rows, None)
         self.value_picker_box[:] = [widget]
         self.update_category_counts()
+
+    def _show_select_buttons(self):
+        """Select all / none only apply to the checkbox list (empty already means all)."""
+        self.select_all_btn.visible = self.deselect_all_btn.visible = self._multi is None
 
     def update_category_counts(self):
         """Puts each category's cell count - among the cells currently shown (e.g. the
         active sample) - next to its name, plus a one-line summary above the list."""
         dataset = self.get_dataset()
         field = self.field_select.value
-        if dataset is None or not field or not self._value_checkboxes:
+        if dataset is None or not field or (not self._value_checkboxes and self._multi is None):
             return
         spec = dataset.classify(field)
         active_idx = self.get_active_indices()
@@ -370,10 +421,11 @@ class ColorControls:
         counts = np.bincount(codes[codes >= 0], minlength=len(spec.categories))
         with pn.io.hold():
             for cat, count in zip(spec.categories, counts):
-                self._value_checkboxes[cat].name = f"{cat}  ({count:,})"
+                if cat in self._value_checkboxes:
+                    self._value_checkboxes[cat].name = f"{cat}  ({count:,})"
             # Categories: biggest first (stable, so ties keep their natural order).
             # Value ranges of a continuous field keep their natural low-to-high order.
-            if spec.kind == "categorical":
+            if spec.kind == "categorical" and self._multi is None:
                 order = np.argsort(-counts, kind="stable")
                 rows = [self._value_rows[spec.categories[i]] for i in order]
                 if self.value_picker_box.objects:
@@ -392,6 +444,8 @@ class ColorControls:
 
     def _set_all(self, value: bool):
         with pn.io.hold():
+            if self._multi is not None:
+                self._multi.value = []  # empty = all shown
             for cb in self._value_checkboxes.values():
                 cb.value = value
 
@@ -422,7 +476,12 @@ class ColorControls:
         return summary
 
     def _active_labels(self) -> set:
+        if self._multi is not None:
+            return set(self._multi.value) or set(self._multi.options)
         return {cat for cat, cb in self._value_checkboxes.items() if cb.value}
+
+    def _n_categories(self) -> int:
+        return len(self._multi.options) if self._multi is not None else len(self._value_checkboxes)
 
     def in_gene_view(self) -> bool:
         return self.mode.value == "Gene & Pathway" and self.expr_mode.value == "Gene"
@@ -445,20 +504,24 @@ class ColorControls:
             self.on_change()
 
     def compute_colors(self, idx: np.ndarray | None = None, binning=None) -> np.ndarray:
-        """Packed colors (see colors.pack_rgb) for every cell, or - given a sample's cell indices `idx` and its
-        hexbin.HexBinning - for every bin of that sample: the bin's mean gene/pathway
-        value, or its most common category among the selected ones."""
+        """Packed colors (see colors.pack_rgb) for every cell, or just the cells `idx`
+        (e.g. a sample's) - or, given those cells' hexbin.HexBinning, for every bin: the
+        bin's gene/pathway value, or its most common category among the selected ones.
+        Gene / pathway colors are scaled over what is colored (those cells, or bins)."""
         dataset = self.get_dataset()
         if dataset is None:
             return np.array([], dtype=np.uint32)
-        n = dataset.adata.n_obs if binning is None else binning.n_bins
+        if binning is not None:
+            n = binning.n_bins
+        else:
+            n = dataset.adata.n_obs if idx is None else len(idx)
         if self.mode.value == "Field":
             if not self.field_select.value:
                 return np.full(n, colors_mod.GRAY_RGBA, dtype=np.uint32)
             spec = dataset.classify(self.field_select.value)
             active = self._active_labels()
             if binning is None:
-                return colors_mod.field_fill_colors(spec, active)
+                return colors_mod.field_fill_colors(spec, active, None if idx is None else spec.codes[idx])
             active_codes = np.array([c in active for c in spec.categories] + [False])
             codes = spec.codes[idx]
             codes = np.where(active_codes[codes], codes, -1)  # code -1 hits the trailing False
@@ -496,8 +559,12 @@ class ColorControls:
                 binning.cell_bin, weights=cell_mask, minlength=binning.n_bins) > 0
             self._update_bin_histograms(channel_values, channels, genes if is_gene else None, binning, mask)
         else:
-            shown = mask
             self._update_histograms(channel_values, mask)
+            shown = mask
+            if idx is not None:
+                shown = None if mask is None else mask[idx]
+                channels = {label: (None if values is None else values[idx], bipolar)
+                            for label, (values, bipolar) in channels.items()}
         if shown is None:
             return colors_mod.compute_rgb_colors(n, channels)
         # Scale colors over the shown cells/bins only, so the contrast reflects them.
@@ -586,9 +653,9 @@ class ColorControls:
         categories of the current field are deselected, else None (nothing filtered)."""
         field = self.field_select.value
         n_selected = len(self._active_labels())
-        if not field or n_selected == len(self._value_checkboxes):
+        if not field or n_selected == self._n_categories():
             return None
-        return field, n_selected, len(self._value_checkboxes)
+        return field, n_selected, self._n_categories()
 
     def category_filter_mask(self) -> np.ndarray | None:
         """Per-cell: is it in a selected category of the current field? None if no
@@ -636,6 +703,9 @@ class ColorControls:
         width = self.get_hex_width()
         others = [sid for sid in dataset.sample_ids
                   if width is not None and dataset.hex_binning(sid, width) is not binning]
+        # Other samples' bins only change with the gene / pathway, width and selected
+        # categories, so they're cached rather than rebuilt on every recolor.
+        mask_key = None if mask is None else (self.field_select.value, frozenset(self._active_labels()))
         for label, values in channel_values.items():
             bin_values = bin_channels[label][0]
             if values is None or bin_values is None:
@@ -647,12 +717,21 @@ class ColorControls:
                 self._show_histogram(label, local, None, f"distribution across {what}")
                 continue
             parts = [local]
+            name = genes[label] if genes is not None else self.channel_widgets[label]["pathway"].value
             for sid in others:
-                idx = dataset.sample_indices(sid)
-                b = dataset.hex_binning(sid, width)
-                cell_mask = None if mask is None else mask[idx]
-                parts.append(dataset.bin_gene_values(genes[label], idx, b, cell_mask) if genes is not None
-                             else b.mean(values[idx], cell_mask))
+                key = (genes is not None, name, width, sid, mask_key)
+                cached = self._bin_values_cache.get(key)
+                if cached is None or cached[0] is not values:  # e.g. a recomputed pathway score
+                    idx = dataset.sample_indices(sid)
+                    b = dataset.hex_binning(sid, width)
+                    cell_mask = None if mask is None else mask[idx]
+                    result = (dataset.bin_gene_values(genes[label], idx, b, cell_mask) if genes is not None
+                              else b.mean(values[idx], cell_mask))
+                    self._bin_values_cache.pop(key, None)
+                    if len(self._bin_values_cache) >= _BIN_VALUES_CACHE_SIZE:
+                        self._bin_values_cache.pop(next(iter(self._bin_values_cache)))
+                    cached = self._bin_values_cache[key] = (values, result)
+                parts.append(cached[1])
             everything = np.concatenate(parts)
             shown = "colored hexagons" if mask is not None else "this sample's hexagons"
             self._show_histogram(label, local, everything[np.isfinite(everything)], shown,
@@ -681,10 +760,11 @@ class ColorControls:
             pname = w["pathway"].value
             if not is_gene and pname:
                 info = pathways.get(pname, {})
-                genes = info.get("genes", [])
+                genes = [html.escape(str(g)) for g in info.get("genes", [])]
                 w["info"].object = (
                     f"<div style='font-size:11px;color:#444;margin:2px 0 4px 0;line-height:1.35'>"
-                    f"<i>{info.get('source', '')}</i><br>{info.get('description', '')}</div>"
+                    f"<i>{html.escape(str(info.get('source', '')))}</i><br>"
+                    f"{html.escape(str(info.get('description', '')))}</div>"
                     f"<details style='font-size:10px;color:#666;margin:0 0 6px 0'>"
                     f"<summary style='cursor:pointer'>Genes ({len(genes)})</summary>"
                     f"<div style='margin-top:4px;font-family:monospace;line-height:1.4;"

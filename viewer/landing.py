@@ -15,7 +15,7 @@ from . import clustering, hexbin
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .clustering import CELLS, HEXAGONS
-from .color_controls import HINT_STYLE
+from .color_controls import HINT_STYLE, keep_filled
 from .file_picker import build_path_picker, remember_folder_of
 from .state import Dataset
 
@@ -65,6 +65,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         value=clustering.DEFAULT_LEIDEN_RESOLUTION, start=0.05, end=10, step=0.1,
         width=260, visible=False,
     )
+    keep_filled(leiden_resolution)  # the hexagon width below may be emptied: it means automatic
     # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
     # type one by one, so by default the hexagonal bins are clustered (and typed).
     leiden_unit = pn.widgets.RadioButtonGroup(

@@ -18,8 +18,8 @@ FieldKind = Literal["categorical", "binned_continuous", "unusable"]
 # A numeric column with at most this many distinct values is treated like a category
 # (the user's "not categorical, but few unique values" case).
 CATEGORICAL_MAX_UNIQUE = 20
-# A categorical/object column with more distinct values than this uses a searchable
-# multi-select instead of one checkbox per value.
+# A field with more categories than this is filtered with a searchable multi-select
+# instead of one checkbox + color swatch per value (see color_controls).
 CHECKBOX_MAX = 60
 # A column whose distinct-value count is at or above this (or close to n_obs) is
 # treated as an identifier and excluded from the "color by" list entirely.
@@ -62,6 +62,25 @@ def _classify_categorical(adata, colname: str, series: pd.Series) -> FieldSpec:
         name=colname, kind="categorical", categories=ordered_categories,
         codes=codes, colors=palette,
     )
+
+
+def _number_label(value) -> str:
+    """1.0 -> "1", 0.25 -> "0.25", 7 -> "7"."""
+    value = value.item() if hasattr(value, "item") else value
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _classify_numeric_categorical(adata, colname: str, series: pd.Series) -> FieldSpec:
+    """A numeric column with few distinct values, as categories in numeric (not
+    alphabetical) order; missing values stay missing rather than becoming "nan"."""
+    values = np.sort(pd.unique(series.dropna().to_numpy(dtype=float)))
+    labels = [_number_label(v) for v in values]
+    numeric = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    codes = pd.Categorical(numeric, categories=values).codes.astype(np.int32)
+    palette = colors_mod.assign_categorical_colors(adata, colname, labels)
+    return FieldSpec(name=colname, kind="categorical", categories=labels, codes=codes, colors=palette)
 
 
 def _classify_binned(series: pd.Series) -> FieldSpec:
@@ -109,7 +128,9 @@ def classify_field(
         return FieldSpec(name=colname, kind="unusable", reason="No non-null values")
 
     is_bool = pd.api.types.is_bool_dtype(series)
-    is_cat_dtype = isinstance(series.dtype, pd.CategoricalDtype) or series.dtype == object or is_bool
+    # pandas 3 gives plain text columns its own "str" dtype rather than object.
+    is_cat_dtype = (isinstance(series.dtype, pd.CategoricalDtype) or series.dtype == object
+                    or pd.api.types.is_string_dtype(series.dtype) or is_bool)
     is_numeric = pd.api.types.is_numeric_dtype(series) and not is_bool
 
     if is_cat_dtype:
@@ -122,7 +143,7 @@ def classify_field(
 
     if is_numeric:
         if nunique <= categorical_max:
-            return _classify_categorical(adata, colname, series.astype(str))
+            return _classify_numeric_categorical(adata, colname, series)
         return _classify_binned(series)
 
     # Anything else (e.g. datetime): fall back to categorical-like handling if small,
@@ -130,16 +151,4 @@ def classify_field(
     if nunique <= categorical_max:
         return _classify_categorical(adata, colname, series.astype(str))
     return FieldSpec(name=colname, kind="unusable", reason="Unsupported dtype with many unique values")
-
-
-def list_field_options(adata, exclude: tuple[str, ...] = ()) -> list[str]:
-    """Column names eligible for the 'color by' selector, alphabetically sorted."""
-    options = []
-    for col in adata.obs.columns:
-        if col in exclude:
-            continue
-        spec = classify_field(adata, col)
-        if spec.kind != "unusable":
-            options.append(col)
-    return sorted(options)
 
