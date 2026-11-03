@@ -89,18 +89,32 @@ def tissue_options(markers: pd.DataFrame) -> list[str]:
     return [ALL_TISSUES] + sorted(markers["organ"].dropna().unique())
 
 
+#: how many randomly chosen gene names guess_species checks for mouse casing
+SPECIES_SAMPLE = 100
+
+
+def _mouse_cased(name: str) -> bool:
+    """True for a mouse-style symbol (Col1a1, mt-Co1): lowercase letters beyond human
+    names' "orf" (C1orf112), and not a probe / control name (NegControlProbe_00042)."""
+    if "_" in name or "control" in name.lower() or "blank" in name.lower():
+        return False
+    return any(ch.islower() for ch in name.replace("orf", ""))
+
+
 def guess_species(var_names) -> str:
-    """'mouse' if gene symbols are mostly mouse-cased (Col1a1), else 'human' (COL1A1).
-    Ensembl IDs are recognised by prefix (ENSMUSG = mouse, ENSG = human)."""
-    names = [str(v) for v in var_names[:2000] if any(ch.isalpha() for ch in str(v))]
+    """'mouse' if any of SPECIES_SAMPLE randomly chosen gene symbols is mouse-cased
+    (Col1a1), else 'human' (COL1A1) - files often upper-case their first genes, so
+    those alone mislead. Ensembl IDs are recognised by prefix (ENSMUSG = mouse, ENSG = human)."""
+    names = [str(v) for v in var_names if any(ch.isalpha() for ch in str(v))]
     if not names:
         return "human"
-    ensembl_mouse = sum(n.upper().startswith("ENSMUS") for n in names)
-    ensembl_human = sum(n.upper().startswith("ENSG") for n in names)
-    if ensembl_mouse + ensembl_human > len(names) / 2:
+    rng = np.random.default_rng(0)
+    sample = [names[i] for i in rng.choice(len(names), min(SPECIES_SAMPLE, len(names)), replace=False)]
+    ensembl_mouse = sum(n.upper().startswith("ENSMUS") for n in sample)
+    ensembl_human = sum(n.upper().startswith("ENSG") for n in sample)
+    if ensembl_mouse + ensembl_human > len(sample) / 2:
         return "mouse" if ensembl_mouse > ensembl_human else "human"
-    mouse_like = sum(n[0].isupper() and n[1:] != n[1:].upper() for n in names if len(n) > 1)
-    return "mouse" if mouse_like > len(names) / 2 else "human"
+    return "mouse" if any(_mouse_cased(n) for n in sample) else "human"
 
 
 def _as_bool(col: pd.Series) -> pd.Series:
