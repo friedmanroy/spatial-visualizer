@@ -1,43 +1,49 @@
-"""Rudimentary marker-based cell typing of clusters (e.g. Leiden), from PanglaoDB's
-cell-type marker genes plus the user's own marker sets, with one of two methods:
+"""Rudimentary marker-based cell typing of clusters (e.g. Leiden), from a marker database
+(PanglaoDB by default - see DATABASES) plus the user's own marker sets. Everything runs
+on existing implementations (decoupler, scanpy), on single cells - or, for a clustering of
+hexagonal bins (sub-cellular spots), on its hexagons - over all measured genes (minus any
+background genes the user left out). One of four methods:
 
-- ULM (decoupler): each cluster is summarised by its cells' mean expression - or, for a
-  clustering of hexagonal bins (sub-cellular spots), by its bins' mean - and every gene
-  is then standardised across clusters, so a marker set scores high in a cluster where
-  its genes are *relatively* high. decoupler's univariate linear model scores each cell
-  type against each cluster, and the best-scoring type is suggested - or "Unknown" when
-  no type scores significantly.
-- ScType (Ianevski et al. 2022): every gene is standardised across the cells (or
-  hexagons); a type's score in a cell adds up its markers' levels - each weighted by
-  how specific it is, i.e. how few of the scored types share it - and subtracts its
-  negative markers' (genes the type should *not* express). A cluster gets the type with
-  the highest mean score over its cells, or "Unknown" if that's below SCTYPE_MIN_SCORE.
-- Top-gene overlap (over-representation analysis): each cluster's own top genes are
-  found first, without any marker list (Wilcoxon, the cluster vs all other clusters, over
-  every gene), then a hypergeometric test asks which type's markers are over-represented
-  among them; the most significant type is suggested (adjusted p < MAX_PVALUE), else
-  "Unknown". Negative markers aren't used.
+- AUCell (decoupler `dc.mt.aucell`): per cell, how near the top of the cell's own gene
+  ranking a type's markers are.
+- Module score (scanpy `sc.tl.score_genes`): per cell, the markers' mean expression minus
+  that of randomly drawn control genes of similar expression.
+- ULM (decoupler `dc.mt.ulm`, as in decoupler's PanglaoDB tutorial): per cell, a linear
+  model of all genes' expression on "is a marker of the type" (negative markers count -1).
+- Top-gene overlap (scanpy `sc.tl.rank_genes_groups` + decoupler `dc.mt.ora`): each
+  cluster's own top genes (Wilcoxon, the cluster vs the rest, at most ORA_TOP_GENES with
+  adjusted p < MAX_PVALUE and log2 FC >= ORA_MIN_LFC), then Fisher's exact test of which
+  type's markers are over-represented among them (all scored genes as background).
 
-Negative markers come only from the user's own marker sets (PanglaoDB has none); ULM
-uses them too, as markers with weight -1.
+For the per-cell methods, each cluster is then labelled as in decoupler's tutorial: decoupler's
+`dc.tl.rankby_group` tests every type's scores in the cluster's cells against all other
+cells (t-test), and the type with the highest positive statistic is suggested - or
+"Unknown" when none is significant (adjusted p < MAX_PVALUE). For the top-gene overlap the
+most over-represented significant type is suggested, else "Unknown".
 
-Each cell also gets a confidence (0-1) in its cluster's suggested type: the method's
-scores computed per cell (ULM's for the top-gene overlap, which has no per-cell score),
-turned into shares with a softmax over all scored types -
-near 1 when the cell's markers clearly point to that type, low when another type's
-markers fit it as well or better. For a hexagon clustering this is scored per hexagon
-(single spots hold too few transcripts) and every spot gets its hexagon's confidence.
-These are suggestions to check against known markers, not a validated annotation.
+Negative markers come only from the user's own marker sets (the databases have none);
+only ULM can use them (as weight -1) - the other methods leave them out.
 
-PanglaoDB is downloaded once (through OmniPath) and kept in cache/ for offline use.
-Marker sets the user edits or adds on the Cell types tab are kept in
-cache/custom_markers.json - only the differences from PanglaoDB (added types, changed
-gene lists, switched-off types), so a fresh PanglaoDB download never loses them.
+Each cell also gets a confidence (0-1) in its cluster's suggested type: the percentile of
+its score for that type among all cells (ULM's score for the top-gene overlap, which has
+no per-cell score) - near 1 when the cell expresses the type's markers more strongly than
+almost any other cell. For a hexagon clustering it's computed per hexagon and every spot
+gets its hexagon's. These are suggestions to check against known markers, not a
+validated annotation.
+
+Each database is downloaded through decoupler/OmniPath the first time it's chosen and
+kept in cache/ for offline use. Databases OmniPath doesn't serve (CellMarker 2.0, TISCH2's
+per-dataset marker tables, ...) can be imported from a file the user downloaded
+(import_marker_file); they're kept, already tidied, in cache/marker_databases/.
+Every database is turned into the same (cell_type, gene, tissue, species) table.
+Marker sets the user adds on the Cell types tab are kept in cache/custom_markers.json; a
+set named like one of the database's types replaces that type's markers.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -53,15 +59,12 @@ UNKNOWN = "Unknown"
 #: a cell type needs at least this many of its markers measured to be scored at all -
 #: low, since targeted spatial panels often hold only a handful of any type's markers
 MIN_MARKERS = 3
-#: PanglaoDB markers detected in fewer than this fraction of that cell type's cells are
+#: PanglaoDB markers detected in no more than this fraction of that cell type's cells are
 #: left out (the threshold decoupler's own cell-type tutorial uses)
 MIN_SENSITIVITY = 0.5
-#: a suggestion needs a ULM p-value below this, else the cluster is "Unknown" (decoupler
-#: already adjusts each cluster's p-values across the cell types tried, Benjamini-Hochberg)
+#: a suggestion needs an adjusted p-value below this (Benjamini-Hochberg, as decoupler /
+#: scanpy report them), else the cluster is "Unknown"
 MAX_PVALUE = 0.05
-#: ScType calls a cluster "Unknown" when its best type's mean score per cell (or
-#: hexagon) is below this - ScType's own rule (summed score under a quarter of the cells)
-SCTYPE_MIN_SCORE = 0.25
 #: top-gene overlap: a cluster's top genes are at most this many genes significantly
 #: higher than in the other clusters (adjusted p < MAX_PVALUE, log2 FC >= ORA_MIN_LFC)...
 ORA_TOP_GENES = 100
@@ -70,57 +73,258 @@ ORA_MIN_LFC = 0.5
 ORA_MAX_UNITS = 1000
 #: how many candidates per cluster are kept for display
 N_CANDIDATES = 3
+#: cells (or hexagons) decoupler scores at once - bounds memory on million-cell data
+BATCH_SIZE = 50_000
 
 #: how cell types are scored (label shown in the UI -> key)
-ULM, SCTYPE, ORA = "ulm", "sctype", "ora"
+AUCELL, SCORE_GENES, ULM, ORA = "aucell", "score_genes", "ulm", "ora"
 METHODS = {
-    "ULM (decoupler, on cluster averages)": ULM,
-    "ScType (specific + negative markers)": SCTYPE,
-    "Top-gene overlap (each cluster's top genes vs marker sets)": ORA,
+    "AUCell (decoupler)": AUCELL,
+    "Module score (scanpy score_genes)": SCORE_GENES,
+    "ULM (decoupler's PanglaoDB tutorial)": ULM,
+    "Top-gene overlap (cluster top genes vs marker sets, ORA)": ORA,
 }
+DEFAULT_METHOD = ULM
 
-_MARKERS_CACHE = os.path.join(cache.CACHE_DIR, "panglaodb_markers.csv.gz")
 CUSTOM_MARKERS_PATH = os.path.join(cache.CACHE_DIR, "custom_markers.json")
+#: imported marker databases: one tidied table each, plus index.json naming them
+IMPORTED_DIR = os.path.join(cache.CACHE_DIR, "marker_databases")
+_IMPORTED_INDEX = os.path.join(IMPORTED_DIR, "index.json")
 #: how many of a cluster's strongest markers for its suggested type are listed
 N_DRIVERS = 4
 
 #: which marker sets cell typing uses (label shown in the UI -> key)
 MARKER_SOURCES = {
-    "PanglaoDB + my edits": "both",
-    "PanglaoDB only": "panglao",
+    "Database + my marker sets": "both",
+    "Database only": "database",
     "My marker sets only": "custom",
 }
-#: where a marker set comes from, as shown in the Cell types table
-ORIGIN_PANGLAO, ORIGIN_EDITED, ORIGIN_ADDED = "PanglaoDB", "PanglaoDB, edited", "Added by you"
+#: where a marker set comes from
+ORIGIN_DATABASE, ORIGIN_EDITED, ORIGIN_ADDED = "database", "edited", "added"
 
 
-def load_markers() -> pd.DataFrame:
-    """PanglaoDB's marker table (human gene symbols, with per-species flags), from
-    cache/ if present, else downloaded through decoupler/OmniPath and cached."""
-    if os.path.exists(_MARKERS_CACHE):
-        return pd.read_csv(_MARKERS_CACHE)
-    import decoupler as dc  # imported lazily: it's slow to import and only needed here
+@dataclass(frozen=True)
+class MarkerDatabase:
+    key: str
+    name: str  # shown in the UI
+    about: str  # one line on what it holds, shown under the dropdown
+    resource: str | None = None  # OmniPath resource (through decoupler); None = imported from a file
+    common_tissues: tuple[str, ...] = ()  # offered alongside a chosen tissue's own types
+    #: "cell type" or "cell state" (CancerSEA labels clusters by functional state)
+    kind: str = "cell type"
 
+
+#: the databases decoupler downloads (key -> MarkerDatabase); imported ones are added at runtime
+DATABASES = {
+    "panglaodb": MarkerDatabase(
+        "panglaodb", "PanglaoDB",
+        "Canonical markers of ~180 cell types across most tissues, from scRNA-seq studies.",
+        "PanglaoDB", COMMON_ORGANS),
+    "celltypist": MarkerDatabase(
+        "celltypist", "CellTypist (immune)",
+        "Markers of ~100 immune (and some stromal) subtypes - finer T / B / myeloid cells, "
+        "useful for a tumor's immune infiltrate.",
+        "CellTypist"),
+    "cancersea": MarkerDatabase(
+        "cancersea", "CancerSEA (cancer cell states)",
+        "Genes of 14 functional states of cancer cells (hypoxia, EMT, stemness, invasion, ...) - "
+        "labels clusters by state rather than by cell type.",
+        "CancerSEA", kind="cell state"),
+}
+DEFAULT_DATABASE = "panglaodb"
+#: an imported table with per-gene scores (TISCH2 / Seurat / scanpy marker tables) keeps
+#: each type's IMPORT_TOP_GENES highest-scoring genes with adjusted p < MAX_PVALUE
+IMPORT_TOP_GENES = 50
+#: CellMarker's marker sources; markers found only by single-cell sequencing are left out
+#: (the rest are curated from experiments, reviews and antibody vendors)
+_UNCURATED_SOURCES = {"single-cell sequencing"}
+
+
+def _cache_path(db: MarkerDatabase) -> str:
+    if db.resource is None:
+        return os.path.join(IMPORTED_DIR, f"{db.key}.csv.gz")
+    # PanglaoDB keeps the name it was cached under before other databases were offered
+    return os.path.join(cache.CACHE_DIR, f"{db.key}_markers.csv.gz")
+
+
+def all_databases() -> dict[str, MarkerDatabase]:
+    """The built-in databases followed by the imported ones."""
     try:
-        markers = dc.op.resource("PanglaoDB", organism="human")
-    except Exception as exc:
-        raise RuntimeError(
-            "Couldn't download the PanglaoDB marker genes (needs an internet connection "
-            "the first time; after that they're kept in cache/)."
-        ) from exc
-    os.makedirs(cache.CACHE_DIR, exist_ok=True)
-    tmp = _MARKERS_CACHE + ".tmp"  # never leave a truncated table behind
-    markers.to_csv(tmp, index=False, compression="gzip")
-    os.replace(tmp, _MARKERS_CACHE)
-    return markers
+        with open(_IMPORTED_INDEX) as f:
+            index = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        index = {}
+    imported = {key: MarkerDatabase(key, info["name"], info.get("about", "")) for key, info in index.items()}
+    return {**DATABASES, **imported}
 
 
-def markers_available_offline() -> bool:
-    return os.path.exists(_MARKERS_CACHE)
+def markers_available_offline(db: MarkerDatabase) -> bool:
+    return os.path.exists(_cache_path(db))
+
+
+def load_markers(db: MarkerDatabase) -> pd.DataFrame:
+    """`db`'s markers as a (cell_type, gene, tissue, species) table - tissue may be
+    missing, species is "human", "mouse" or "any" - from cache/ if present, else
+    downloaded through decoupler/OmniPath and cached (the download as it came)."""
+    path = _cache_path(db)
+    if db.resource is None:
+        return pd.read_csv(path)
+    if os.path.exists(path):
+        raw = pd.read_csv(path)
+    else:
+        import decoupler as dc  # imported lazily: it's slow to import and only needed here
+
+        try:
+            raw = dc.op.resource(db.resource, organism="human")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Couldn't download the {db.name} marker genes (needs an internet connection "
+                "the first time; after that they're kept in cache/)."
+            ) from exc
+        _write_table(raw, path)
+    return _TIDY[db.key](raw)
+
+
+def _write_table(df: pd.DataFrame, path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"  # never leave a truncated table behind
+    df.to_csv(tmp, index=False, compression="gzip")
+    os.replace(tmp, path)
+
+
+def _tidy_panglao(raw: pd.DataFrame) -> pd.DataFrame:
+    """Canonical markers, per species, detected in more than MIN_SENSITIVITY of that
+    type's cells."""
+    parts = []
+    for species in ("human", "mouse"):
+        keep = (
+            _as_bool(raw[species])
+            & _as_bool(raw["canonical_marker"])
+            & (pd.to_numeric(raw[f"{species}_sensitivity"], errors="coerce") > MIN_SENSITIVITY)
+        )
+        parts.append(pd.DataFrame({"cell_type": raw.loc[keep, "cell_type"], "gene": raw.loc[keep, "genesymbol"],
+                                   "tissue": raw.loc[keep, "organ"], "species": species}))
+    return pd.concat(parts, ignore_index=True)
+
+
+def _tidy_celltypist(raw: pd.DataFrame) -> pd.DataFrame:
+    """Subtypes (CD8 T cells, not just T cells), once per tissue they were seen in."""
+    df = pd.DataFrame({"cell_type": raw["cell_subtype"], "gene": raw["genesymbol"],
+                       "tissue": raw["tissues"].astype(str).str.split(";"), "species": "any"})
+    return df.explode("tissue").drop_duplicates(ignore_index=True)
+
+
+def _tidy_cancersea(raw: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({"cell_type": raw["state"], "gene": raw["genesymbol"], "tissue": None, "species": "any"})
+
+
+_TIDY = {"panglaodb": _tidy_panglao, "celltypist": _tidy_celltypist, "cancersea": _tidy_cancersea}
 
 
 def tissue_options(markers: pd.DataFrame) -> list[str]:
-    return [ALL_TISSUES] + sorted(markers["organ"].dropna().unique())
+    return [ALL_TISSUES] + sorted(markers["tissue"].dropna().astype(str).unique())
+
+
+# ---- importing a database from a file ---------------------------------------------------
+
+#: column names recognised in an imported table (lower-cased), most preferred first
+_TYPE_COLUMNS = ("cell_name", "celltype (major-lineage)", "celltype (minor-lineage)", "celltype",
+                 "cell_type", "cell type", "cell_type_name", "cluster", "group", "state")
+_GENE_COLUMNS = ("symbol", "gene", "genes", "gene_symbol", "genesymbol", "gene symbol", "gene_name",
+                 "marker", "markers", "names", "feature")
+_TISSUE_COLUMNS = ("tissue_class", "tissue", "organ", "tissue_type")
+_SCORE_COLUMNS = ("log2fc", "avg_log2fc", "avg_logfc", "logfc", "logfoldchanges", "log2foldchange",
+                  "log2 fold change", "scores")
+_PADJ_COLUMNS = ("adjusted p-value", "adj. p-value", "p_val_adj", "padj", "pvals_adj", "fdr", "adj.p.val",
+                 "q_value", "qvalue")
+
+
+def _find_column(columns: dict[str, str], candidates) -> str | None:
+    """The original name of the first of `candidates` among `columns` (lower-cased -> original)."""
+    return next((columns[c] for c in candidates if c in columns), None)
+
+
+def _read_table(path: str) -> pd.DataFrame:
+    lower = path.lower()
+    if lower.endswith((".xlsx", ".xls")):
+        return pd.read_excel(path)
+    if lower.endswith(".csv") or lower.endswith(".csv.gz"):
+        return pd.read_csv(path)
+    return pd.read_csv(path, sep=None, engine="python")  # .tsv, .txt: let pandas sniff the separator
+
+
+def import_marker_file(path: str, name: str) -> tuple[MarkerDatabase, str]:
+    """Reads a marker table downloaded by the user - CellMarker 2.0's Cell_marker_*.xlsx,
+    a TISCH2 / Seurat / scanpy marker-gene table, or any table with a cell-type and a
+    gene column - keeps it (tidied) as a database named `name`, and returns it with a
+    one-line summary of what was kept."""
+    raw = _read_table(path)
+    columns = {str(c).strip().lower(): c for c in raw.columns}
+    # Also accept any "Celltype (...)" column TISCH2 might name differently.
+    type_col = _find_column(columns, _TYPE_COLUMNS) or next(
+        (orig for low, orig in columns.items() if low.startswith("celltype")), None)
+    gene_col = _find_column(columns, _GENE_COLUMNS)
+    if type_col is None or gene_col is None:
+        raise ValueError(
+            "Couldn't tell which columns hold the cell types and the genes (found: "
+            + ", ".join(str(c) for c in raw.columns)
+            + "). Name them e.g. 'cell_type' and 'gene'."
+        )
+    notes = []
+    df = raw
+    source_col = columns.get("marker_source")
+    if source_col is not None:  # CellMarker 2.0: keep the curated markers
+        curated = ~df[source_col].astype(str).str.strip().str.lower().isin(_UNCURATED_SOURCES)
+        if curated.any() and not curated.all():
+            notes.append(f"left out {int((~curated).sum()):,} markers found only by single-cell sequencing")
+            df = df[curated]
+    score_col = _find_column(columns, _SCORE_COLUMNS)
+    if score_col is not None:  # a differential-expression table: each type's top genes
+        df = df[pd.to_numeric(df[score_col], errors="coerce") > 0]
+        padj_col = _find_column(columns, _PADJ_COLUMNS)
+        if padj_col is not None:
+            df = df[pd.to_numeric(df[padj_col], errors="coerce") < MAX_PVALUE]
+        df = (df.assign(_score=pd.to_numeric(df[score_col], errors="coerce"))
+              .sort_values("_score", ascending=False).groupby(type_col, sort=False).head(IMPORT_TOP_GENES))
+        notes.append(f"kept each type's top {IMPORT_TOP_GENES} genes by {score_col}"
+                     + (f" with {padj_col} < {MAX_PVALUE:g}" if padj_col is not None else ""))
+    df = df.dropna(subset=[type_col, gene_col])
+    tissue_col = _find_column(columns, _TISSUE_COLUMNS)
+    species_col = columns.get("species")
+    tidy = pd.DataFrame({
+        "cell_type": df[type_col].astype(str).str.strip(),
+        # some tables list several genes in one cell ("CD3D, CD3E")
+        "gene": df[gene_col].astype(str).str.split(r"[,;/\s]+"),
+        "tissue": df[tissue_col].astype(str).str.strip() if tissue_col is not None else None,
+        "species": (df[species_col].astype(str).str.strip().str.lower()
+                    .where(lambda s: s.isin(("human", "mouse")), "any") if species_col is not None else "any"),
+    }).explode("gene")
+    tidy["gene"] = tidy["gene"].str.strip("[]()'\" ")
+    tidy = tidy[(tidy["gene"] != "") & (tidy["gene"].str.lower() != "nan")
+                & (tidy["cell_type"] != "") & (tidy["cell_type"].str.lower() != "nan")]
+    tidy = tidy.drop_duplicates(ignore_index=True)
+    if tidy.empty:
+        raise ValueError("No cell-type markers were left in this file" + (f" ({'; '.join(notes)})" if notes else "") + ".")
+
+    key = "file-" + (re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "markers")
+    about = (f"Imported from {os.path.basename(path)}: {tidy['cell_type'].nunique():,} cell types, "
+             f"{len(tidy):,} markers" + (f" ({'; '.join(notes)})" if notes else "") + ".")
+    db = MarkerDatabase(key, name, about)
+    _write_table(tidy, _cache_path(db))
+    index = {k: {"name": d.name, "about": d.about} for k, d in all_databases().items() if d.resource is None}
+    index[key] = {"name": name, "about": about}
+    cache.write_json_atomic(_IMPORTED_INDEX, index)
+    return db, about
+
+
+def remove_imported(key: str):
+    index = {k: {"name": d.name, "about": d.about}
+             for k, d in all_databases().items() if d.resource is None and k != key}
+    cache.write_json_atomic(_IMPORTED_INDEX, index)
+    try:
+        os.remove(os.path.join(IMPORTED_DIR, f"{key}.csv.gz"))
+    except OSError:
+        pass
 
 
 #: how many randomly chosen gene names guess_species checks for mouse casing
@@ -157,27 +361,24 @@ def _as_bool(col: pd.Series) -> pd.Series:
     return col.astype(str).str.lower().isin(("true", "1"))
 
 
-def marker_sets(markers: pd.DataFrame, species: str, tissue: str, include_common: bool) -> pd.DataFrame:
-    """(cell_type, gene) pairs to score: canonical, sensitive markers seen in `species`,
-    from `tissue` (plus the ubiquitous immune/blood/vessel/connective types if asked)."""
-    keep = (
-        _as_bool(markers[species])
-        & _as_bool(markers["canonical_marker"])
-        & (pd.to_numeric(markers[f"{species}_sensitivity"], errors="coerce") > MIN_SENSITIVITY)
-    )
+def marker_sets(markers: pd.DataFrame, species: str, tissue: str, common_tissues=()) -> pd.DataFrame:
+    """(source = cell type, target = gene) pairs to score: markers seen in `species` (all
+    of them if the database lists none for it - human symbols still match most mouse
+    genes case-insensitively), from `tissue` plus `common_tissues`."""
+    species_ok = markers["species"].isin((species, "any"))
+    keep = species_ok if species_ok.any() else pd.Series(True, index=markers.index)
     if tissue != ALL_TISSUES:
-        organs = {tissue, *COMMON_ORGANS} if include_common else {tissue}
-        keep &= markers["organ"].isin(organs)
-    net = markers.loc[keep, ["cell_type", "genesymbol"]].drop_duplicates()
-    return net.rename(columns={"cell_type": "source", "genesymbol": "target"})
+        keep &= markers["tissue"].isin({tissue, *common_tissues})
+    net = markers.loc[keep, ["cell_type", "gene"]].drop_duplicates()
+    return net.rename(columns={"cell_type": "source", "gene": "target"})
 
 
 # ---- the user's own marker sets ------------------------------------------------------
 
 def load_custom_markers() -> dict:
-    """{"types": {name: {"genes": [...], "negative": [...]}} (added types and edited
-    PanglaoDB types; "negative" = genes the type should not express, optional),
-    "disabled": [names switched off]}."""
+    """{"types": {name: {"genes": [...], "negative": [...]}} (the user's sets - one named
+    like a database type replaces its markers; "negative" = genes the type should not
+    express, optional), "disabled": [names switched off]}."""
     try:
         with open(CUSTOM_MARKERS_PATH) as f:
             data = json.load(f)
@@ -194,39 +395,41 @@ def save_custom_markers(data: dict):
 class MarkerSet:
     name: str
     genes: list[str]
-    origin: str  # ORIGIN_PANGLAO / ORIGIN_EDITED / ORIGIN_ADDED
+    origin: str  # ORIGIN_DATABASE / ORIGIN_EDITED (the user's set replacing a database one) / ORIGIN_ADDED
     enabled: bool
-    panglao_genes: list[str] | None  # PanglaoDB's own list (for "reset"), None if added
+    database_genes: list[str] | None  # the database's own list, None if not a database type
     negative: list[str] = field(default_factory=list)  # genes the type should not express
 
 
-def marker_table(markers: pd.DataFrame | None, species: str, tissue: str, include_common: bool,
-                 custom: dict, source: str) -> list[MarkerSet]:
+def marker_table(markers: pd.DataFrame | None, db: MarkerDatabase, species: str, tissue: str,
+                 include_common: bool, custom: dict, source: str) -> list[MarkerSet]:
     """Every marker set cell typing would consider with these settings (switched-off
-    ones included, with enabled=False): PanglaoDB's for the species/tissue, with the
-    user's edits applied and their added types appended - or only the user's sets."""
-    panglao: dict[str, list[str]] = {}
-    if markers is not None:
-        net = marker_sets(markers, species, tissue, include_common)
-        panglao = {t: list(g) for t, g in net.groupby("source", sort=True)["target"]}
-    # "PanglaoDB only" means PanglaoDB untouched - the user's switched-off types too.
-    disabled = set(custom["disabled"]) if source != "panglao" else set()
-    rows: dict[str, MarkerSet] = {}
-    if source != "custom":
-        for name, genes in panglao.items():
-            rows[name] = MarkerSet(name, genes, ORIGIN_PANGLAO, name not in disabled, genes)
-    for name, info in custom["types"].items():
-        genes = list(info.get("genes", []))
-        negative = list(info.get("negative", []))
-        if name in panglao:
-            if source != "panglao":
-                rows[name] = MarkerSet(name, genes, ORIGIN_EDITED, name not in disabled, panglao[name], negative)
-        elif source != "panglao":
-            # An edited PanglaoDB type outside the chosen tissue still counts as one of
-            # "your" sets; a type you added is always included.
-            origin = ORIGIN_EDITED if info.get("edited_from_panglao") else ORIGIN_ADDED
-            rows[name] = MarkerSet(name, genes, origin, name not in disabled, None, negative)
+    ones included, with enabled=False): the database's for the species/tissue, with the
+    user's sets replacing same-named ones and the rest appended - or only one of the two."""
+    database: dict[str, list[str]] = {}
+    if markers is not None and source != "custom":
+        net = marker_sets(markers, species, tissue, db.common_tissues if include_common else ())
+        database = {t: list(g) for t, g in net.groupby("source", sort=True)["target"]}
+    # "Database only" means the database untouched - the user's switched-off types too.
+    disabled = set(custom["disabled"]) if source != "database" else set()
+    rows = {name: MarkerSet(name, genes, ORIGIN_DATABASE, name not in disabled, genes)
+            for name, genes in database.items()}
+    if source != "database":
+        rows.update({m.name: m for m in custom_sets(custom, database)})
     return sorted(rows.values(), key=lambda m: m.name.lower())
+
+
+def custom_sets(custom: dict, database: dict[str, list[str]] | None = None) -> list[MarkerSet]:
+    """The user's own marker sets; those named like a type in `database` (type -> genes)
+    are marked as replacing it."""
+    database = database or {}
+    disabled = set(custom["disabled"])
+    return sorted(
+        (MarkerSet(name, list(info.get("genes", [])), ORIGIN_EDITED if name in database else ORIGIN_ADDED,
+                   name not in disabled, database.get(name), list(info.get("negative", [])))
+         for name, info in custom["types"].items()),
+        key=lambda m: m.name.lower(),
+    )
 
 
 def net_from_table(rows: list[MarkerSet]) -> pd.DataFrame:
@@ -259,7 +462,7 @@ class CellTypingResult:
     calls: list[ClusterCall]
     hex_width: float | None = None  # bin width (cell spacings) when hexagons were typed
     background: str = ""  # which background genes were left out (GeneFilter.describe)
-    method: str = ULM  # ULM or SCTYPE
+    method: str = DEFAULT_METHOD  # one of METHODS' values
 
 
 def _cluster_means(X, codes: np.ndarray, n_clusters: int) -> np.ndarray:
@@ -276,13 +479,14 @@ def _cluster_means(X, codes: np.ndarray, n_clusters: int) -> np.ndarray:
 
 def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str,
                       tissue: str, report=lambda text: None,
-                      gene_filter: clustering.GeneFilter | None = None, method: str = ULM) -> CellTypingResult:
+                      gene_filter: clustering.GeneFilter | None = None,
+                      method: str = DEFAULT_METHOD) -> CellTypingResult:
     """Suggests a cell type per cluster of obs[`cluster_col`] from the (cell type, gene,
     weight) rows in `net` (see marker_table / net_from_table; weight -1 = negative
-    marker), scored with `method` (ULM or SCTYPE), stores each cell's suggestion as
+    marker), scored with `method` (see METHODS), stores each cell's suggestion as
     obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. A clustering of
     hexagonal bins (dataset.hex_clusterings) is typed on those bins, not on single
-    cells / spots. Marker genes `gene_filter` counts as background are left out.
+    cells / spots. Genes `gene_filter` counts as background are left out.
     `tissue` is only a label for the results."""
     import anndata as ad
     import decoupler as dc
@@ -296,43 +500,32 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
         raise ValueError("Cell typing compares the clusters with each other, so it needs at least 2 "
                          "clusters - try a higher Leiden resolution.")
 
-    # PanglaoDB uses human symbols; match them to this dataset's own spelling (case-
-    # insensitively, which also covers most mouse symbols) and drop unmeasured ones.
+    # What gets scored: hexagons for a hexagon clustering, else the cells themselves -
+    # with every measured gene (log-normalized), less the background genes.
+    width = dataset.hex_clusterings.get(cluster_col)
+    binnings = None
+    if width is not None:
+        report(f"{clustering.hex_profile_verb(dataset)} within hexagonal bins ({width:g} cell spacings wide)")
+        units, binnings = clustering.hex_profiles(dataset, width, None)
+        unit_codes = clustering.cells_to_bins(codes, binnings)
+    else:
+        units, unit_codes = dataset.expression(), codes
+    keep = ~clustering.background_genes(units, gene_filter)
+    genes = list(np.asarray(units.var_names)[keep])
+    scored = ad.AnnData(units.X if keep.all() else units.X[:, np.flatnonzero(keep)],
+                        obs=pd.DataFrame(index=[str(i) for i in range(units.n_obs)]),
+                        var=pd.DataFrame(index=genes))
+
+    # The databases mostly use human symbols; match them to this dataset's own spelling
+    # (case-insensitively, which also covers most mouse symbols) and drop unmeasured ones.
     report("Matching the marker genes to this data's genes")
     net = net.copy()
     if "weight" not in net.columns:
         net["weight"] = 1.0
     net["target"] = [dataset.match_gene(g) for g in net["target"]]
-    net = net.dropna(subset=["target"]).drop_duplicates(["source", "target"])
-    genes = sorted(set(net["target"]))
-
-    # What gets scored: hexagons for a hexagon clustering, else the cells themselves.
-    width = dataset.hex_clusterings.get(cluster_col)
-    binnings = None
-    full = None  # every gene of the scored units: the top-gene overlap looks beyond the markers
-    if not genes:
-        units, unit_codes = None, codes
-    elif width is not None:
-        report(f"{clustering.hex_profile_verb(dataset)} within hexagonal bins ({width:g} cell spacings wide)")
-        bins, binnings = clustering.hex_profiles(dataset, width, None if method == ORA else genes)
-        if method == ORA:
-            full, units = bins, bins[:, genes].copy()
-        else:
-            units = bins
-        unit_codes = clustering.cells_to_bins(codes, binnings)
-    else:
-        # Log-normalized expression even where .X is kept as raw counts (Dataset.expression).
-        expr = dataset.expression()
-        if method == ORA:
-            full = expr
-        units, unit_codes = ad.AnnData(expr.X[:, [adata.var_names.get_loc(g) for g in genes]]), codes
-    if units is not None:
-        units.var_names = genes
-        background = clustering.background_genes(units, gene_filter)
-        if background.any():
-            units = units[:, ~background].copy()
-            genes = list(units.var_names)
-            net = net[net["target"].isin(genes)]
+    net = net[net["target"].isin(set(genes))].drop_duplicates(["source", "target"])
+    if method != ULM:  # only ULM can weigh negative markers
+        net = net[net["weight"] > 0]
     # Only (positive) markers count towards MIN_MARKERS: a type isn't identified by
     # what it lacks alone.
     measured = net[net["weight"] > 0].groupby("source").size()
@@ -343,37 +536,50 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
             "genes measured in this data - try 'All tissues', check the marker sets on the "
             "Cell types tab, or the gene panel may be too small for marker-based typing."
         )
-    keep = units.var_names.isin(set(net["target"]))
-    units = units[:, keep].copy()
-    genes = list(units.var_names)
+    types = sorted(net["source"].unique())
+    marker_genes = sorted(set(net.loc[net["weight"] > 0, "target"]))
 
     unit_word = "hexagons" if width is not None else "cells"
     method_name = {v: k for k, v in METHODS.items()}[method]
-    report(f"Scoring {net['source'].nunique()} cell types in each of the {len(names)} clusters ({method_name})")
-    if method == SCTYPE:
-        unit_scores, types, gene_mean, gene_spread = _sctype_unit_scores(units.X, genes, net)
-        scores, standout, confident = _sctype_cluster_scores(
-            unit_scores, types, units.X, gene_mean, gene_spread, genes, unit_codes, names)
-    elif method == ORA:
-        keep_genes = ~clustering.background_genes(full, gene_filter)
-        scores, standout, confident = _ora_cluster_scores(full, keep_genes, net, unit_codes, names, report)
+    report(f"Scoring {len(types)} cell types in each of the {scored.n_obs:,} {unit_word} ({method_name})")
+    if method == ORA:
+        tables, standout = _ora_tables(dc, scored, net, unit_codes, names, report)
+        # No per-cell score of its own: the confidence uses ULM's.
+        report(f"Scoring each {unit_word[:-1]}'s confidence in its type ({scored.n_obs:,} {unit_word})")
+        unit_scores = _decoupler_scores(dc.mt.ulm, scored, net)
     else:
-        scores, standout, confident = _ulm_cluster_scores(dc, units.X, genes, net, unit_codes, names)
+        if method == SCORE_GENES:
+            unit_scores = _module_scores(scored, net, types)
+        else:
+            unit_scores = _decoupler_scores(dc.mt.aucell if method == AUCELL else dc.mt.ulm, scored, net)
+        report(f"Testing each cluster's scores against all other {unit_word} (decoupler rankby_group)")
+        tables = _rank_by_cluster(dc, unit_scores, unit_codes, names)
+        # The type's markers that stand out most in each cluster: cluster means of the
+        # marker genes, standardised across clusters.
+        means = pd.DataFrame(_cluster_means(scored[:, marker_genes].X, unit_codes, len(names)),
+                             index=names, columns=marker_genes)
+        standout = (means - means.mean(axis=0)) / means.std(axis=0).replace(0, 1)
 
     n_bins = np.bincount(unit_codes[unit_codes >= 0], minlength=len(names)) if width is not None else None
     calls = []
     for i, name in enumerate(names):
-        ranked = scores.loc[name].sort_values(ascending=False)
-        label = ranked.index[0] if confident[name] else UNKNOWN
+        table = tables.get(name)
+        label = UNKNOWN
+        candidates = []
+        if table is not None and len(table):
+            best = table.iloc[0]
+            if best["score"] > 0 and best["padj"] < MAX_PVALUE:
+                label = str(best["type"])
+            candidates = [(str(r["type"]), float(r["score"]), int(measured[r["type"]]))
+                          for _, r in table.head(N_CANDIDATES).iterrows()]
         drivers = []
-        if label != UNKNOWN:  # the type's markers that stand out most in this cluster
+        if label != UNKNOWN:
             type_genes = [g for g in net.loc[(net["source"] == label) & (net["weight"] > 0), "target"]
                           if g in standout.columns]
             levels = standout.loc[name, type_genes].sort_values(ascending=False)
             drivers = [(g, float(v)) for g, v in levels.items() if v > 0][:N_DRIVERS]
         calls.append(ClusterCall(
-            cluster=name, n_cells=int(sizes[i]), label=label,
-            candidates=[(t, float(ranked[t]), int(measured[t])) for t in ranked.index[:N_CANDIDATES]],
+            cluster=name, n_cells=int(sizes[i]), label=label, candidates=candidates,
             drivers=drivers, n_bins=None if n_bins is None else int(n_bins[i]),
         ))
 
@@ -383,15 +589,8 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     present = sorted({c.label for c in calls} - {UNKNOWN}) + ([UNKNOWN] if UNKNOWN in label_of.values() else [])
     adata.obs[column] = pd.Categorical(cell_labels, categories=present)
 
-    report(f"Scoring each {unit_word[:-1]}'s confidence in its type ({units.n_obs:,} {unit_word})")
     unit_labels = np.array([calls[c].label if c >= 0 else None for c in unit_codes], dtype=object)
-    if method == SCTYPE:
-        # Rows without any marker expression get no confidence, as with ULM.
-        X = units.X
-        has_markers = (np.diff(sp.csr_matrix(X).indptr) > 0) if sp.issparse(X) else (np.asarray(X) != 0).any(axis=1)
-        unit_conf = _softmax_confidence(unit_scores, types, unit_labels, has_markers)
-    else:
-        unit_conf = _cell_confidence(dc, units, net, unit_labels)
+    unit_conf = _percentile_confidence(unit_scores, unit_labels)
     confidence = (unit_conf if binnings is None
                   else clustering.bins_to_cells(unit_conf, binnings, adata.n_obs, fill=np.nan))
     confidence_column = f"{column}_confidence"
@@ -401,41 +600,67 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
         if call.label != UNKNOWN and in_cluster.any():
             call.mean_confidence = float(np.nanmean(unit_conf[in_cluster]))
     return CellTypingResult(cluster_col, column, confidence_column, species, tissue,
-                            int(net["source"].nunique()), calls, hex_width=width,
+                            len(types), calls, hex_width=width,
                             background="" if gene_filter is None else gene_filter.describe(),
                             method=method)
 
 
-def _ulm_cluster_scores(dc, X, genes: list[str], net: pd.DataFrame, unit_codes: np.ndarray,
-                        names: list[str]):
-    """(clusters x types ULM scores, clusters x genes standardised levels, per cluster:
-    whether its best type scores significantly). Genes are standardised across the
-    clusters' mean profiles."""
-    means = pd.DataFrame(_cluster_means(X, unit_codes, len(names)), index=names, columns=genes)
-    spread = means.std(axis=0)
-    means = means.loc[:, spread > 0]
-    if means.shape[1] == 0:
-        raise ValueError("None of the measured marker genes differs between the clusters, so "
-                         "there's nothing to tell cell types apart by.")
-    scaled = (means - means.mean(axis=0)) / spread[means.columns]
-    scores, pvalues = dc.mt.ulm(data=scaled, net=net, tmin=MIN_MARKERS)
-    top = scores.idxmax(axis=1)
-    confident = pd.Series([scores.loc[c, t] > 0 and pvalues.loc[c, t] < MAX_PVALUE for c, t in top.items()],
-                          index=scores.index)
-    return scores, scaled, confident
+def _decoupler_scores(func, scored, net: pd.DataFrame) -> pd.DataFrame:
+    """Units x types scores from a decoupler method (dc.mt.aucell / dc.mt.ulm) on `scored`
+    (an AnnData of units x genes); NaN for units without any expression, which decoupler
+    leaves out."""
+    out = func(data=scored, net=net, tmin=MIN_MARKERS, bsize=BATCH_SIZE)
+    result = scored if out is None else out  # decoupler returns a copy when it drops empty rows
+    key = f"score_{func.name}"
+    scores = result.obsm[key].reindex(scored.obs_names)
+    for k in [k for k in scored.obsm if k.endswith(f"_{func.name}")]:
+        del scored.obsm[k]
+    return scores
 
 
-def _ora_cluster_scores(full, keep: np.ndarray, net: pd.DataFrame, unit_codes: np.ndarray,
-                        names: list[str], report):
-    """(clusters x types -log10 adjusted p-value of its markers' overlap with the
-    cluster's top genes, clusters x marker genes: the cluster's Wilcoxon score for its top
-    genes (0 for the rest), per cluster: whether its best type is significant).
-
-    `full` holds every gene of the units (cells or hexagons); genes where `keep` is False
-    (background) are left out of both the top genes and the gene universe."""
+def _module_scores(scored, net: pd.DataFrame, types: list[str]) -> pd.DataFrame:
+    """Units x types scanpy module scores (sc.tl.score_genes, its default control genes)."""
     import anndata as ad
     import scanpy as sc
-    from scipy.stats import false_discovery_control, hypergeom
+
+    work = ad.AnnData(scored.X, obs=pd.DataFrame(index=scored.obs_names), var=pd.DataFrame(index=scored.var_names))
+    scores = {}
+    for t in types:
+        markers = list(net.loc[net["source"] == t, "target"])
+        sc.tl.score_genes(work, markers, score_name="_score", use_raw=False, random_state=0)
+        scores[t] = work.obs.pop("_score").to_numpy()
+    return pd.DataFrame(scores, index=scored.obs_names)
+
+
+def _rank_by_cluster(dc, unit_scores: pd.DataFrame, unit_codes: np.ndarray,
+                     names: list[str]) -> dict[str, pd.DataFrame]:
+    """Per cluster: every type's (type, score = t statistic, padj) from decoupler's
+    rankby_group - the cluster's units against all others - best first. Clusters with
+    fewer than 2 scored units can't be tested and get no table."""
+    import anndata as ad
+
+    valid = (unit_codes >= 0) & unit_scores.notna().all(axis=1).to_numpy()
+    counts = np.bincount(unit_codes[valid], minlength=len(names))
+    valid &= np.isin(unit_codes, np.flatnonzero(counts >= 2))
+    groups = [names[c] for c in unit_codes[valid]]
+    if len(set(groups)) < 2:
+        raise ValueError("Too few cells / hexagons with marker expression to compare the clusters.")
+    data = ad.AnnData(unit_scores.to_numpy()[valid],
+                      obs=pd.DataFrame({"cluster": pd.Categorical(groups)}, index=unit_scores.index[valid]),
+                      var=pd.DataFrame(index=unit_scores.columns.astype(str)))
+    ranked = dc.tl.rankby_group(data, groupby="cluster", reference="rest", method="t-test_overestim_var")
+    return {str(g): df.rename(columns={"name": "type", "stat": "score"})
+            .sort_values("score", ascending=False)[["type", "score", "padj"]].reset_index(drop=True)
+            for g, df in ranked.groupby("group")}
+
+
+def _ora_tables(dc, scored, net: pd.DataFrame, unit_codes: np.ndarray, names: list[str], report):
+    """(per cluster: every type's (type, score = log odds ratio, padj) from decoupler's ORA
+    of the cluster's top genes, best first; clusters x marker genes: the cluster's
+    Wilcoxon score for its top genes, 0 for the rest). All of `scored`'s genes are the
+    background."""
+    import anndata as ad
+    import scanpy as sc
 
     rng = np.random.default_rng(0)
     picked = []
@@ -448,142 +673,50 @@ def _ora_cluster_scores(full, keep: np.ndarray, net: pd.DataFrame, unit_codes: n
     rows = np.sort(np.concatenate(picked)) if picked else np.zeros(0, dtype=int)
     groups = [names[c] for c in unit_codes[rows]]
     tested = [n for n in names if n in set(groups)]
-    gene_names = np.asarray(full.var_names)[keep]
-
-    top: dict[str, pd.Series] = {}  # cluster -> its top genes' Wilcoxon scores
-    if len(tested) >= 2:
-        report(f"Finding each cluster's top genes ({len(tested)} clusters, {len(rows):,} cells / hexagons, "
-               f"{int(keep.sum()):,} genes)")
-        sub = ad.AnnData(
-            full.X[rows][:, np.flatnonzero(keep)],
-            obs=pd.DataFrame({"cluster": pd.Categorical(groups, categories=tested)},
-                             index=[str(i) for i in range(len(rows))]),
-            var=pd.DataFrame(index=gene_names),
-        )
-        sub.uns["log1p"] = {"base": None}  # the units are log-normalized expression
-        sc.tl.rank_genes_groups(sub, "cluster", method="wilcoxon", use_raw=False, tie_correct=True)
-        for name in tested:
-            df = sc.get.rank_genes_groups_df(sub, group=name)
-            df = df[(df["pvals_adj"] < MAX_PVALUE) & (df["logfoldchanges"] >= ORA_MIN_LFC)]
-            top[name] = df.sort_values("scores", ascending=False).head(ORA_TOP_GENES).set_index("names")["scores"]
-
-    report("Testing which marker sets are over-represented among each cluster's top genes")
-    types = sorted(net["source"].unique())
-    markers = {t: set(net.loc[(net["source"] == t) & (net["weight"] > 0), "target"]) for t in types}
-    n_markers = np.array([len(markers[t]) for t in types])
-    universe = int(keep.sum())
-    scores = pd.DataFrame(0.0, index=names, columns=types)
-    standout = pd.DataFrame(0.0, index=names, columns=sorted(set(net["target"])))
-    confident = pd.Series(False, index=names)
-    for name, gene_scores in top.items():
-        drawn = set(gene_scores.index)
-        if not drawn:
+    genes = list(scored.var_names)
+    marker_genes = sorted(set(net["target"]))
+    standout = pd.DataFrame(0.0, index=names, columns=marker_genes)
+    tables: dict[str, pd.DataFrame] = {}
+    if len(tested) < 2:
+        return tables, standout
+    report(f"Finding each cluster's top genes ({len(tested)} clusters, {len(rows):,} cells / hexagons, "
+           f"{len(genes):,} genes; scanpy rank_genes_groups, Wilcoxon)")
+    sub = ad.AnnData(
+        scored.X[rows],
+        obs=pd.DataFrame({"cluster": pd.Categorical(groups, categories=tested)},
+                         index=[str(i) for i in range(len(rows))]),
+        var=pd.DataFrame(index=genes),
+    )
+    sub.uns["log1p"] = {"base": None}  # the units are log-normalized expression
+    sc.tl.rank_genes_groups(sub, "cluster", method="wilcoxon", use_raw=False, tie_correct=True)
+    report("Testing which marker sets are over-represented among each cluster's top genes (decoupler ORA)")
+    for name in tested:
+        df = sc.get.rank_genes_groups_df(sub, group=name)
+        top = df[(df["pvals_adj"] < MAX_PVALUE) & (df["logfoldchanges"] >= ORA_MIN_LFC)]
+        top = top.sort_values("scores", ascending=False).head(ORA_TOP_GENES)
+        if top.empty:
             continue
-        overlap = np.array([len(markers[t] & drawn) for t in types])
-        padj = false_discovery_control(hypergeom.sf(overlap - 1, universe, n_markers, len(drawn)))
-        # Equally significant types (common after adjusting) are ranked by their overlap.
-        scores.loc[name] = -np.log10(np.maximum(padj, 1e-300)) + 1e-6 * overlap
-        best = int(np.argmax(scores.loc[name].to_numpy()))
-        confident[name] = bool(padj[best] < MAX_PVALUE and overlap[best] > 0)
-        hits = [g for g in standout.columns if g in drawn]
-        standout.loc[name, hits] = gene_scores[hits].to_numpy()
-    return scores, standout, confident
+        # ORA takes each row's n_up highest values as the "selected" genes: give the top
+        # genes descending ranks and every other gene 0.
+        values = pd.Series(0.0, index=genes)
+        values[list(top["names"])] = np.arange(len(top), 0, -1, dtype=float)
+        es, padj = dc.mt.ora(data=values.to_frame(name).T, net=net, tmin=MIN_MARKERS,
+                             n_up=len(top), n_bg=0, empty=False)
+        tables[name] = (pd.DataFrame({"type": es.columns, "score": es.iloc[0].to_numpy(),
+                                      "padj": padj.iloc[0].to_numpy()})
+                        .sort_values(["score", "padj"], ascending=[False, True]).reset_index(drop=True))
+        hits = [g for g in marker_genes if g in set(top["names"])]
+        standout.loc[name, hits] = top.set_index("names").loc[hits, "scores"].to_numpy()
+    return tables, standout
 
 
-def _gene_mean_spread(X) -> tuple[np.ndarray, np.ndarray]:
-    """Each column's mean and standard deviation over the rows of X (sparse or dense),
-    without densifying; a spread of 0 becomes 1 (the column is then 0 once centred)."""
-    mean = np.asarray(X.mean(axis=0), dtype=np.float64).ravel()
-    mean_sq = np.asarray((X.multiply(X) if sp.issparse(X) else np.asarray(X) ** 2).mean(axis=0),
-                         dtype=np.float64).ravel()
-    spread = np.sqrt(np.maximum(mean_sq - mean ** 2, 0))
-    spread[spread == 0] = 1.0
-    return mean, spread
-
-
-def _sctype_unit_scores(X, genes: list[str], net: pd.DataFrame):
-    """ScType scores of every row of X (cells or hexagons x `genes`): (rows x types array,
-    types, the genes' means, the genes' spreads). Per type: the sum of its markers'
-    standardised levels, each weighted by its specificity, over sqrt(number of markers),
-    minus the same for its negative markers (unweighted). Specificity is 1 for a marker
-    of one type and falls linearly to 0 for one shared by every type scored.
-    Standardising is folded into the weights, so a sparse X is never densified."""
-    X = sp.csr_matrix(X, dtype=np.float32) if sp.issparse(X) else np.asarray(X, dtype=np.float32)
-    mean, spread = _gene_mean_spread(X)
-    types = sorted(net["source"].unique())
-    positive = net[net["weight"] > 0]
-    n_types = len(types)
-    shared_by = positive.groupby("target")["source"].nunique()
-    specificity = (n_types - shared_by) / (n_types - 1) if n_types > 1 else shared_by * 0 + 1.0
-    gene_index = {g: i for i, g in enumerate(genes)}
-    W = np.zeros((len(genes), n_types))
-    for j, t in enumerate(types):
-        rows = net[net["source"] == t]
-        pos = [g for g in rows.loc[rows["weight"] > 0, "target"] if g in gene_index]
-        neg = [g for g in rows.loc[rows["weight"] < 0, "target"] if g in gene_index]
-        for g in pos:
-            W[gene_index[g], j] += specificity[g] / np.sqrt(len(pos))
-        for g in neg:
-            W[gene_index[g], j] -= 1.0 / np.sqrt(len(neg))
-    # ((X - mean) / spread) @ W == X @ Wz - mean @ Wz, with Wz = W / spread
-    Wz = W / spread[:, None]
-    scores = np.asarray(X @ Wz) - mean @ Wz
-    return scores, types, mean, spread
-
-
-def _sctype_cluster_scores(unit_scores: np.ndarray, types: list[str], X, gene_mean, gene_spread,
-                           genes: list[str], unit_codes: np.ndarray, names: list[str]):
-    """(clusters x types mean ScType score per unit, clusters x genes mean standardised
-    level, per cluster: whether its best type reaches SCTYPE_MIN_SCORE)."""
-    valid = unit_codes >= 0
-    rows = np.flatnonzero(valid)
-    indicator = sp.csr_matrix((np.ones(len(rows)), (unit_codes[valid], rows)),
-                              shape=(len(names), unit_scores.shape[0]))
-    n_units = np.asarray(indicator.sum(axis=1)).ravel()
-    scores = pd.DataFrame(np.asarray(indicator @ unit_scores) / np.maximum(n_units, 1)[:, None],
-                          index=names, columns=types)
-    standout = pd.DataFrame((_cluster_means(X, unit_codes, len(names)) - gene_mean) / gene_spread,
-                            index=names, columns=genes)
-    confident = (scores.max(axis=1) >= SCTYPE_MIN_SCORE) & pd.Series(n_units > 0, index=names)
-    return scores, standout, confident
-
-
-def _softmax_confidence(S: np.ndarray, types: list[str], unit_labels: np.ndarray,
-                        scored: np.ndarray) -> np.ndarray:
-    """Per row of S (units x types scores): the softmax share of the row's assigned type
-    among all types (NaN for rows without a type, or not `scored`)."""
-    S = np.nan_to_num(np.asarray(S, dtype=np.float64))
-    S = S - S.max(axis=1, keepdims=True)
-    share = np.exp(S)
-    share /= share.sum(axis=1, keepdims=True)
-    type_index = {t: j for j, t in enumerate(types)}
-    confidence = np.full(S.shape[0], np.nan, dtype=np.float32)
+def _percentile_confidence(unit_scores: pd.DataFrame, unit_labels: np.ndarray) -> np.ndarray:
+    """Per unit: the percentile (0-1) of its score for its assigned type among all units'
+    scores for that type (NaN for units without a type or a score)."""
+    confidence = np.full(len(unit_scores), np.nan, dtype=np.float32)
     for label in set(unit_labels) - {None, UNKNOWN}:
-        if label in type_index:
-            rows = np.flatnonzero((unit_labels == label) & scored)
-            confidence[rows] = share[rows, type_index[label]]
+        if label in unit_scores.columns:
+            percentile = unit_scores[label].rank(pct=True).to_numpy()
+            rows = unit_labels == label
+            confidence[rows] = percentile[rows]
     return confidence
-
-
-def _cell_confidence(dc, units, net: pd.DataFrame, cell_labels: np.ndarray) -> np.ndarray:
-    """Per row of `units` (cells or hexagons x marker genes): softmax share of its
-    assigned type among all scored types' ULM scores (NaN for rows without a type).
-    Genes are divided by their spread across rows (not centred, so sparse data stays
-    sparse) so no gene dominates by scale."""
-    import anndata as ad
-
-    genes = list(units.var_names)
-    X = units.X
-    X = sp.csr_matrix(X, dtype=np.float32) if sp.issparse(X) else np.asarray(X, dtype=np.float32)
-    _, spread = _gene_mean_spread(X)
-    X = X @ sp.diags(1.0 / spread) if sp.issparse(X) else X / spread
-    cells = ad.AnnData(sp.csr_matrix(X) if sp.issparse(X) else X)
-    cells.var_names = genes
-    # Batches keep memory bounded on million-cell data (each batch is densified).
-    cells.obs_names = [str(i) for i in range(cells.n_obs)]
-    # Rows without any marker expression are dropped and a repaired copy returned;
-    # they get no confidence (NaN) rather than an even split across types.
-    repaired = dc.mt.ulm(data=cells, net=net, tmin=MIN_MARKERS, bsize=50_000)
-    scores = (cells if repaired is None else repaired).obsm["score_ulm"].reindex(cells.obs_names)
-    scored = scores.notna().any(axis=1).to_numpy()
-    return _softmax_confidence(scores.to_numpy(dtype=np.float64), list(scores.columns), cell_labels, scored)

@@ -48,19 +48,28 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   detected in almost every cell / hexagon can be left out of clustering, PCA/UMAP, cell typing
   and the "most expressed genes" shown (mitochondrial genes are left out by default).
 - **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
-  PanglaoDB marker genes, scored with [decoupler](https://decoupler.readthedocs.io) (ULM on
-  the clusters' standardised mean expression). A hexagon clustering is typed on its hexagons,
-  and each spot's confidence is its hexagon's. The species (human or mouse) is preset from the gene names (and can be changed); pick the
+  a marker database's genes - PanglaoDB (default), CellTypist (finer immune subtypes) or
+  CancerSEA (cancer cell states: hypoxia, EMT, stemness...). Every cell (or, for a hexagon
+  clustering, every hexagon) is scored over all genes with ULM (decoupler's PanglaoDB
+  tutorial, the default), AUCell (decoupler) or a module score (scanpy `score_genes`), and
+  each cluster gets the type that scores significantly higher in it than elsewhere
+  (decoupler `rankby_group`). Alternatively, *top-gene overlap* tests each cluster's own top
+  genes (scanpy Wilcoxon) for over-represented marker sets (decoupler ORA). Each cell's
+  confidence is the percentile of its score for its type; a spot gets its hexagon's. The species (human or mouse) is preset from the gene names (and can be changed); pick the
   tissue to keep off-tissue types out; a table shows each cluster's suggestion, score and
   runners-up. A rough first guess to check against known markers - not a validated
-  annotation. PanglaoDB is downloaded once (needs internet) and then kept in `cache/`.
-- **Your own marker sets** - a **Cell types** tab lists the marker gene sets cell typing uses
-  (PanglaoDB's for the chosen species/tissue) in an editable table: change a type's genes,
-  switch types off, add your own cell types, reset edits, or view a set as a pathway score.
+  annotation. Each database is downloaded through decoupler/OmniPath the first time it's
+  picked (needs internet) and then kept in `cache/`. Databases OmniPath doesn't serve -
+  CellMarker 2.0's `Cell_marker_Human.xlsx` (curated markers kept), a TISCH2 dataset's
+  marker-gene table, or any table with a cell-type and a gene column - can be imported from
+  a downloaded file on the **Cell types** tab.
+- **Your own marker sets** - a **Cell types** tab lists your own marker gene sets in an
+  editable table: change a type's genes, switch types off, add cell types (one named like a
+  database type replaces its markers), or view a set as a pathway score.
   It shows how many of each set's markers are measured in your data, and can re-run cell
   typing on an existing clustering right away. The suggestions table lists the markers
   behind each call. Your changes are saved in `cache/custom_markers.json` and used for every
-  dataset; the Leiden panel picks PanglaoDB only, your sets only, or both.
+  dataset; the Leiden panel picks the database only, your sets only, or both.
 - **Gene & Pathway view** - RGB-channel overlay of up to three genes or gene-set (pathway)
   scores at once, with autocomplete gene search, a description + gene list for each pathway,
   and a small histogram of the score distribution under each channel.
@@ -224,9 +233,9 @@ viewer/
   clustering.py              normalization check, PCA/neighbors, Leiden (per cell or per hex bin)
   hexbin.py                  hexagonal binning (huge samples, sub-cellular spots)
   gene_filter_controls.py    "leave out background genes" widgets
-  celltyping.py              PanglaoDB + decoupler cell-type suggestions for clusters
+  celltyping.py              marker databases + decoupler cell-type suggestions for clusters
   celltype_controls.py       species / tissue widgets and the suggestions table
-  markers_page.py            "Cell types" tab: edit / add marker gene sets
+  markers_page.py            "Cell types" tab: your marker sets, database import
   busy_overlay.py            full-page "working..." overlay
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
