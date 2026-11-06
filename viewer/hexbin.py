@@ -70,7 +70,7 @@ class HexBinning:
         )
         result = np.asarray(tally.argmax(axis=1)).ravel().astype(np.int32)
         share = np.asarray(tally.max(axis=1).todense()).ravel() / self.counts
-        empty = tally.getnnz(axis=1) == 0
+        empty = tally.count_nonzero(axis=1) == 0
         result[empty] = -1
         share[empty] = np.nan
         return result, share
