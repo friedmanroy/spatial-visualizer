@@ -79,10 +79,7 @@ def score_pathway(dataset, pathway_name: str, pathways: dict) -> np.ndarray | No
     # one): the genes were matched against .var_names, and .raw often holds raw counts.
     adata = dataset.expression()
     score_col = f"_pathway_score_{pathway_name}"
-    sc.tl.score_genes(
-        adata, gene_list=genes, score_name=score_col,
-        ctrl_size=min(50, max(len(genes), 10)), random_state=0, use_raw=False,
-    )
+    sc.tl.score_genes(adata, gene_list=genes, score_name=score_col, random_state=0, use_raw=False)
     score = np.asarray(adata.obs[score_col].to_numpy(), dtype=np.float64)
     del adata.obs[score_col]
     cache[pathway_name] = score
