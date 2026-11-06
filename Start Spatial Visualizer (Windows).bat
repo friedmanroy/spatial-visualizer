@@ -2,7 +2,8 @@
 rem Double-click to start the Spatial Transcriptomics Visualizer (Windows).
 rem
 rem Runs the copy of the app in this folder. uv provides a private Python + packages -
-rem nothing is installed system-wide and no admin rights are needed.
+rem nothing is installed system-wide and no admin rights are needed. --frozen installs
+rem exactly the versions in uv.lock, so every computer gets the same environment.
 
 setlocal
 title Spatial Transcriptomics Visualizer
@@ -28,7 +29,7 @@ echo The app opens in your browser. Closing the browser tab stops it ^(after abo
 echo.
 
 echo Using the version in this folder.
-uv run --managed-python --python %PYTHON_VERSION% --project "%HERE%" spatial-visualizer
+uv run --frozen --managed-python --python %PYTHON_VERSION% --project "%HERE%" spatial-visualizer
 if errorlevel 1 goto :fail
 goto :eof
 

@@ -2,7 +2,8 @@
 # Double-click to start the Spatial Transcriptomics Visualizer (macOS).
 #
 # Runs the copy of the app in this folder. uv provides a private Python + packages -
-# nothing is installed system-wide and no admin rights are needed.
+# nothing is installed system-wide and no admin rights are needed. --frozen installs
+# exactly the versions in uv.lock, so every computer gets the same environment.
 
 PYTHON_VERSION="3.13"
 
@@ -30,5 +31,5 @@ echo "The app opens in your browser. Closing the browser tab stops it (after abo
 echo
 
 echo "Using the version in this folder."
-uv run --managed-python --python "$PYTHON_VERSION" \
+uv run --frozen --managed-python --python "$PYTHON_VERSION" \
     --project "$HERE" spatial-visualizer || fail

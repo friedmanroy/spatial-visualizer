@@ -173,7 +173,9 @@ pip install -r requirements.txt     # or: pip install -e .
 ```
 
 Dependencies are pinned in `pyproject.toml`. `requirements.txt` just installs this package
-(in editable mode) from there.
+(in editable mode) from there. `uv.lock` pins every package they pull in as well; the
+double-click launchers install exactly what it lists (`uv run --frozen`), so after changing
+the dependencies run `uv lock` and commit the updated `uv.lock` with them.
 
 ## Usage
 
@@ -213,6 +215,7 @@ period, so a page reload doesn't).
 ```
 st_visualizer.py         entry point (`python st_visualizer.py`)
 pyproject.toml           package metadata + pinned dependencies (`spatial-visualizer` command)
+uv.lock                  exact versions of every package, used by the launchers
 Start Spatial Visualizer (Mac).command / (Windows).bat   double-click launchers
 viewer/
   cli.py                 starts the server (shared by the script and the installed command)

@@ -16,4 +16,3 @@ build/
 
 # environment the double-click launchers create when running the local copy
 .venv/
-uv.lock
