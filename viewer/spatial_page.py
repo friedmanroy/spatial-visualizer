@@ -133,9 +133,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     hover_formatter = hover.add_hover(fig, renderers.values(), source)
     detail_formatter = hover.add_hover(fig, detail_renderers.values(), detail_source)
     # The zoomed-in cells are a subset of what's drawn anyway; leaving them out of the
-    # auto-ranging keeps a new batch of them from moving the view.
-    fig.x_range.renderers = list(renderers.values())
-    fig.y_range.renderers = list(renderers.values())
+    # auto-ranging keeps a new batch of them from moving the view. The auto-ranging can't
+    # use `renderers` either: it only sees the bins the filter lets through, so with all
+    # of them under individual cells there would be no range and nothing would draw.
+    extent = fig.scatter(x="x", y="y", source=source, visible=False)
+    fig.x_range.renderers = [extent]
+    fig.y_range.renderers = [extent]
 
     def chosen_shape(lattice) -> str:
         return lattice.shape if marker_shape.value == spatial_plot.AUTO_SHAPE else marker_shape.value
