@@ -244,82 +244,13 @@ IMAGE_ORIENTATIONS = {
 }
 
 
-#: a background image is considered misplaced (and is fitted to the cells instead) when
-#: fewer than this fraction of the cells land on it...
-_MIN_CELLS_ON_IMAGE = 0.5
-#: ...or when it's this many times larger or smaller than the area the cells span
-_MAX_IMAGE_SIZE_RATIO = 10.0
-#: images are strided down to about this many px (longest side) to find the tissue on them
-_FIT_IMAGE_SIDE = 512
-
-
-def _image_near_cells(x0: float, y0: float, dw: float, dh: float, coords: np.ndarray) -> bool:
-    """Whether an image placed at [x0, x0+dw] x [y0, y0+dh] overlaps the cells well
-    enough to be trusted as is."""
-    if len(coords) == 0:
-        return True
-    xs, ys = coords[:, 0], coords[:, 1]
-    on_image = ((xs >= x0) & (xs <= x0 + dw) & (ys >= y0) & (ys <= y0 + dh)).mean()
-    cells_size = max(float(np.ptp(xs)), float(np.ptp(ys)))
-    if cells_size > 0:
-        ratio = max(dw, dh) / cells_size
-        if not (1 / _MAX_IMAGE_SIZE_RATIO <= ratio <= _MAX_IMAGE_SIZE_RATIO):
-            return False
-    return on_image >= _MIN_CELLS_ON_IMAGE
-
-
-def _tissue_weights(img: np.ndarray) -> tuple[np.ndarray, int]:
-    """Per-pixel weights (on an image strided down by the returned step) for how much
-    each pixel looks like tissue rather than background: its distance in brightness from
-    the image's border, which is assumed to be background (works for both brightfield
-    and fluorescence images)."""
-    step = max(1, int(np.ceil(max(img.shape[0], img.shape[1]) / _FIT_IMAGE_SIDE)))
-    small = np.nan_to_num(np.asarray(img[::step, ::step], dtype=np.float32))
-    if small.ndim == 3:
-        small = small[..., :3].mean(axis=-1)
-    border = np.concatenate([small[0], small[-1], small[:, 0], small[:, -1]])
-    weights = np.abs(small - np.median(border))
-    if weights.max() <= 0:
-        return np.ones_like(small), step
-    # Drops faint noise in the background, which would otherwise pull the fit toward
-    # the image's center.
-    weights[weights < 0.1 * weights.max()] = 0.0
-    return weights, step
-
-
-def _fit_image_to_cells(img: np.ndarray, coords: np.ndarray) -> tuple[float, float, float, float]:
-    """(x0, y0, dw, dh) placing `img` so the tissue on it has the same mean and std
-    (per axis) as the cells' coordinates."""
-    weights, step = _tissue_weights(img)
-    total = weights.sum()
-    rows = (np.arange(weights.shape[0]) + 0.5) * step
-    cols = (np.arange(weights.shape[1]) + 0.5) * step
-    row_w, col_w = weights.sum(axis=1) / total, weights.sum(axis=0) / total
-    placement = []
-    for pos, w, cell_vals, n_px in ((cols, col_w, coords[:, 0], img.shape[1]),
-                                   (rows, row_w, coords[:, 1], img.shape[0])):
-        px_mean = float((pos * w).sum())
-        px_std = float(np.sqrt((((pos - px_mean) ** 2) * w).sum()))
-        cell_mean, cell_std = float(cell_vals.mean()), float(cell_vals.std())
-        scale = cell_std / px_std if px_std > 0 and cell_std > 0 else 1.0
-        placement.append((cell_mean - px_mean * scale, n_px * scale))
-    (x0, dw), (y0, dh) = placement
-    return x0, y0, dw, dh
-
-
-def background_image_data(img: np.ndarray, scalef: float, orientation: str = "As stored",
-                          coords: np.ndarray | None = None) -> tuple[dict, bool]:
+def background_image_data(img: np.ndarray, scalef: float, orientation: str = "As stored") -> dict:
     """ColumnDataSource data placing `img` (reoriented per IMAGE_ORIENTATIONS) so its
     pixels line up with obsm['spatial']. The figure's y axis is flipped, so row 0 of
-    the array lands at the top. When `coords` (the cells being drawn) are given and the
-    image doesn't land anywhere near them, it's instead stretched/moved so its tissue has
-    the same mean and std as the cells; the returned flag says whether that happened."""
+    the array lands at the top."""
     img = IMAGE_ORIENTATIONS[orientation](img)
     h, w = img.shape[0], img.shape[1]
-    x0, y0, dw, dh = 0.0, 0.0, w / scalef, h / scalef
-    fitted = coords is not None and not _image_near_cells(x0, y0, dw, dh, coords)
-    if fitted:
-        x0, y0, dw, dh = _fit_image_to_cells(img, coords)
     return {
-        "image": [image_to_rgba(img)], "x": [x0], "y": [y0], "dw": [dw], "dh": [dh],
-    }, fitted
+        "image": [image_to_rgba(img)], "x": [0.0], "y": [0.0],
+        "dw": [w / scalef], "dh": [h / scalef],
+    }
