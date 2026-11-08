@@ -57,7 +57,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     bin_width = pn.widgets.FloatInput(
         name="Bin width (in cell spacings)",
-        value=hexbin.default_width_factor(dataset.sample_width_spots(dataset.largest_sample())),
+        # The width the landing page clustered with, if it did (the automatic one unless
+        # changed there, so what's drawn matches what was clustered); else the automatic one.
+        value=(list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings
+               else hexbin.default_width_factor(dataset.sample_width_spots(dataset.largest_sample()))),
         start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
         description="How many neighboring cells wide each hexagon is; a bin k wide holds about k² cells.",
     )
@@ -496,9 +499,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
     )
     leiden_width = pn.widgets.FloatInput(
-        # The width the landing page clustered with, if it did; else the display's.
         name="Hexagon width (in cell spacings)",
-        value=list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings else bin_width.value,
+        value=bin_width.value,
         start=1.0, end=100.0, step=0.5,
         sizing_mode="stretch_width",
         description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
