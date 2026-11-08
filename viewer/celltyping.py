@@ -506,7 +506,7 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     binnings = None
     if width is not None:
         report(f"{clustering.hex_profile_verb(dataset)} within hexagonal bins ({width:g} cell spacings wide)")
-        units, binnings = clustering.hex_profiles(dataset, width, None)
+        units, binnings = clustering.hex_profiles(dataset, width, None, dataset.hex_cluster_filters.get(cluster_col))
         unit_codes = clustering.cells_to_bins(codes, binnings)
     else:
         units, unit_codes = dataset.expression(), codes

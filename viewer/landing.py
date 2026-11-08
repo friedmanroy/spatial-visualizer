@@ -41,7 +41,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     normalize_hint = pn.pane.HTML(
         "For raw counts. Each cell / spot is normalized for coloring, differential expression and "
         "per-cell clustering; hexagons sum their spots' <i>raw</i> counts first and are then "
-        f"normalized as one unit. Above {hexbin.BINNING_THRESHOLD:,} spots in a sample, only the "
+        f"log1p'd as one unit (normalizing them is a separate choice). Above {hexbin.BINNING_THRESHOLD:,} spots in a sample, only the "
         "hexagons are normalized - single spots are too sparse, and stay raw counts. "
         "Uncheck if <code>.X</code> is already normalized - it's then used "
         "as-is, and hexagons hold their spots' mean.",
@@ -88,12 +88,26 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         description=hexbin.EDGE_DESCRIPTION,
     )
     leiden_width_note = pn.pane.HTML("", styles=HINT_STYLE, width=420, margin=(0, 10, 6, 10))
-    leiden_width_box = pn.Column(leiden_width, leiden_width_note, visible=False, margin=0)
+    leiden_width_box = pn.Column(leiden_width, leiden_width_note, state.hex_filter.layout, visible=False,
+                                 width=420, margin=0)
     leiden_unit.param.watch(lambda e: setattr(leiden_width_box, "visible", e.new == HEXAGONS), "value")
     typing = state.celltyping
     typing_box = pn.Column(state.gene_filter.layout, typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
 
+    async def update_hex_filter_info(*events):
+        """Previews the hexagon filter on the largest sample, while hexagons would be clustered."""
+        ds = holder["dataset"]
+        if ds is None or not leiden_checkbox.value or leiden_unit.value != HEXAGONS:
+            return
+        largest = ds.largest_sample()
+        factor = leiden_factor() or ds.default_hex_factor()
+        await asyncio.to_thread(ds.hex_binning, largest, factor)  # the slow part, the first time
+        # .X still holds the counts it will be normalized from, when opening.
+        counts = ds.counts if ds.counts is not None else ds.adata.X if normalize_checkbox.value else None
+        state.hex_filter.show(ds, largest, factor, counts)
+
     async def on_leiden_toggle(event):
+        await update_hex_filter_info()
         leiden_resolution.visible = typing_box.visible = event.new
         leiden_unit.visible = leiden_unit_hint.visible = event.new
         leiden_width_box.visible = event.new and leiden_unit.value == HEXAGONS
@@ -143,8 +157,12 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         leiden_width.placeholder = f"automatic: {suggested:g}"
         leiden_width.param.update(value=suggested, **hexbin.edge_input_range(holder["spacing"]))
         update_width_note()
+        await update_hex_filter_info()
 
     leiden_width.param.watch(update_width_note, "value")
+    leiden_width.param.watch(update_hex_filter_info, "value")
+    leiden_unit.param.watch(update_hex_filter_info, "value")
+    normalize_checkbox.param.watch(update_hex_filter_info, "value")
     sample_col_select.param.watch(suggest_width, "value")
 
     def on_select_all_fields(event):
@@ -238,6 +256,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         # clustering bins each sample separately.
         sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
+        ds.hex_filter = state.hex_filter.value
         # Before anything reads the expression; only once, should opening be retried.
         if normalize_checkbox.value and ds.counts is None:
             if ds.largest_sample_size() > hexbin.BINNING_THRESHOLD:

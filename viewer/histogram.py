@@ -15,6 +15,31 @@ import numpy as np
 
 WIDTH_PX = 280
 HEIGHT_PX = 46
+_TOTALS_HEIGHT_PX = 70
+
+
+def _as_img(fig, height: int) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, format="svg", transparent=True)
+    plt.close(fig)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:{height}px;display:block" />'
+
+
+def render_totals_histogram(totals: np.ndarray, cutoff: float) -> str:
+    """Hexagons' total counts on a log axis, with a dashed line at `cutoff`."""
+    fig, ax = plt.subplots(figsize=(WIDTH_PX / 100, _TOTALS_HEIGHT_PX / 100), dpi=100)
+    edges = np.logspace(0, np.log10(max(totals.max(), 10) + 1), 41)
+    ax.hist(np.maximum(totals, 1), bins=edges, color="#9e9e9e")
+    ax.axvline(max(cutoff, 1), color="#d32f2f", linestyle="--", linewidth=1)
+    ax.set_xscale("log")
+    ax.set_yscale("symlog", linthresh=10)  # or the low-count tail this exists to show can't be seen
+    ax.set_yticks([])
+    ax.tick_params(axis="x", labelsize=7, length=2)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    fig.tight_layout(pad=0.2)
+    return _as_img(fig, _TOTALS_HEIGHT_PX)
 
 
 def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None, color: str) -> str:
@@ -44,9 +69,4 @@ def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None,
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     fig.tight_layout(pad=0.2)
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="svg", transparent=True)
-    plt.close(fig)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    return f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:{HEIGHT_PX}px;display:block" />'
+    return _as_img(fig, HEIGHT_PX)

@@ -22,7 +22,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
   (by default about 50,000 hexagons over the sample's bounding rectangle - adjustable as
   **Hexagon edge length**, in the coordinates' units, under **Display settings**): each bin shows
-  a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
+  a gene's expression from its cells' summed counts, log1p'd per bin (like the hexagons
   clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
   scores), or their most common selected category. Zoom in until at most
   200,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
@@ -36,8 +36,15 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   (`normalize_total` + `log1p`); it's ticked when `.X` looks like raw counts, and the choice
   is remembered per file. Each cell / spot is normalized for coloring and differential
   expression, but hexagons (clustering, cell typing and PCA/UMAP on hexagons) **sum their
-  spots' raw counts first** and are normalized as one unit afterwards. Left unticked, `.X` is
-  used as-is and a hexagon holds its spots' mean.
+  spots' raw counts first**, then get `log1p` as one unit, after `normalize_total` by default
+  (a separate checkbox). Left unticked, `.X` is used as-is and a hexagon holds its spots' mean.
+- **Hexagon filter** - hexagons with too little data are left out of clustering, cell typing,
+  PCA/UMAP and differential expression, before normalizing, and drawn gray with their spots
+  unlabeled: by default those with under 50% of their sample's median spots per hexagon (a
+  tile's rim, fiducial marks) or under 15 total counts. A histogram of total counts shows what
+  the minimum removes. Keep it low: low counts alone can be real tissue, such as white matter.
+  The same panel sets how widely a gene must be detected to be picked as variable for PCA and
+  Leiden on hexagons (by default in at least 2% of them).
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
   clusters **hexagons** (edge length adjustable) and every spot gets its
@@ -234,7 +241,8 @@ viewer/
   histogram.py               gene/pathway score distribution histograms
   pathways.py                pathways.json + custom pathway loading, score_genes scoring
   clustering.py              normalization check, PCA/neighbors, Leiden (per cell or per hex bin)
-  hexbin.py                  hexagonal binning (huge samples, sub-cellular spots)
+  hexbin.py                  hexagonal binning (huge samples, sub-cellular spots), hexagon filter
+  hex_filter_controls.py     hexagon filter and normalization widgets
   gene_filter_controls.py    "leave out background genes" widgets
   celltyping.py              marker databases + decoupler cell-type suggestions for clusters
   celltype_controls.py       species / tissue widgets and the suggestions table

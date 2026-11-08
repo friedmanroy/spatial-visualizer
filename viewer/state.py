@@ -100,6 +100,8 @@ class Dataset:
         self._gene_cache: dict[str, np.ndarray] = {}
         self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
         self._cell_totals: np.ndarray | None = None  # each cell's total of self.counts
+        # Which hexagons are analysed and whether they're normalized (hexbin.HexFilter).
+        self.hex_filter = hexbin.HexFilter()
         self._var_upper_lookup: dict[str, str] | None = None
         self._variable_ranking: np.ndarray | None = None  # var indices, most variable first
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
@@ -112,6 +114,8 @@ class Dataset:
         # obs column -> bin width (cell spacings) of clusterings made on hexagonal bins,
         # so cell typing can score those same bins rather than single cells / spots.
         self.hex_clusterings: dict[str, float] = {}
+        # obs column -> the hexbin.HexFilter its hexagons were clustered with.
+        self.hex_cluster_filters: dict[str, hexbin.HexFilter] = {}
         # For a dataset of hexagon profiles made from another one (the scRNA tab's
         # hexagon PCA/UMAP): (that Dataset, [(cell indices, HexBinning)] per sample).
         self.hex_source: tuple | None = None
@@ -223,6 +227,27 @@ class Dataset:
             self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
         return self._binning_cache[key]
 
+    def cell_totals(self) -> np.ndarray | None:
+        """Each cell's total of self.counts (None without kept counts)."""
+        if self.counts is None:
+            return None
+        if self._cell_totals is None:
+            self._cell_totals = np.asarray(self.counts.sum(axis=1)).ravel()
+        return self._cell_totals
+
+    def kept_bins(self, idx: np.ndarray, binning, hex_filter: hexbin.HexFilter | None = None) -> np.ndarray:
+        """Boolean mask over `binning`'s bins (of the sample's cells `idx`): those `hex_filter`
+        (by default self.hex_filter) analyses."""
+        totals = self.cell_totals()
+        return (hex_filter or self.hex_filter).keep(binning, None if totals is None else binning.sum(totals[idx]))
+
+    def kept_binning(self, sample_id: str, width_factor: float, hex_filter: hexbin.HexFilter | None = None):
+        """(the sample's cells in analysed bins, a binning of only those bins and cells)."""
+        idx = self.sample_indices(sample_id)
+        binning = self.hex_binning(sample_id, width_factor)
+        cells, kept = binning.subset(self.kept_bins(idx, binning, hex_filter))
+        return idx[cells], kept
+
     # -- gene expression -------------------------------------------------------
     @property
     def raw_spots(self) -> bool:
@@ -290,8 +315,9 @@ class Dataset:
     def bin_gene_values(self, gene: str, idx: np.ndarray, binning, mask: np.ndarray | None = None):
         """`gene`'s value in each bin of `binning` (over the sample's cells `idx`), made
         the way clustering.hex_profiles makes hexagons: with the pre-normalization counts
-        kept, the bin's summed counts of the gene over its summed total counts, scaled to
-        the sample's median bin total, log1p'd; otherwise its cells' mean. With a boolean
+        kept, the bin's summed counts of the gene, over its summed total counts and scaled
+        to the median total of the sample's analysed bins if hex_filter.normalize, log1p'd
+        (bins the filter leaves out are NaN); otherwise its cells' mean. With a boolean
         `mask` (per cell of `idx`), only those cells count, and bins without any are NaN."""
         values = self.gene_values(gene)
         if values is None:
@@ -303,15 +329,18 @@ class Dataset:
             col = self.counts[:, self.adata.var_names.get_loc(matched)]
             self._count_cache[matched] = (np.asarray(col.todense()).ravel() if sp.issparse(col)
                                           else np.asarray(col).ravel())
-        if self._cell_totals is None:
-            self._cell_totals = np.asarray(self.counts.sum(axis=1)).ravel()
-        totals = self._cell_totals[idx]
-        bin_totals = binning.sum(totals, mask)
-        all_totals = binning.sum(totals) if mask is not None else bin_totals
-        target = float(np.median(all_totals[all_totals > 0])) if (all_totals > 0).any() else 1.0
+        keep = self.kept_bins(idx, binning)
         gene_sums = binning.sum(self._count_cache[matched][idx], mask)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            out = np.where(bin_totals > 0, np.log1p(gene_sums / bin_totals * target), 0.0)
+        if self.hex_filter.normalize:
+            totals = self.cell_totals()[idx]
+            bin_totals = binning.sum(totals, mask)
+            kept_totals = (binning.sum(totals) if mask is not None else bin_totals)[keep]
+            target = float(np.median(kept_totals[kept_totals > 0])) if (kept_totals > 0).any() else 1.0
+            with np.errstate(invalid="ignore", divide="ignore"):
+                out = np.where(bin_totals > 0, np.log1p(gene_sums / bin_totals * target), 0.0)
+        else:
+            out = np.log1p(gene_sums)
+        out[~keep] = np.nan
         if mask is not None:
             out[binning.sum(np.ones(len(idx)), mask) == 0] = np.nan
         return out
@@ -369,6 +398,9 @@ class AppState:
         # Background genes left out of PCA / UMAP / Leiden and cell typing
         # (gene_filter_controls.GeneFilterControls), shared like the cell-typing settings.
         self.gene_filter = None
+        # Which hexagons are analysed and whether they're normalized
+        # (hex_filter_controls.HexFilterControls), shared like the background genes.
+        self.hex_filter = None
         # Called with each new celltyping.CellTypingResult (e.g. to refresh the Cell types tab).
         self.celltype_listeners: list = []
         # async (cluster_col) -> None: cell-types a clustering of the spatial data and

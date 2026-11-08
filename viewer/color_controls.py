@@ -606,6 +606,12 @@ class ColorControls:
             # Bins without any cell of a selected category have no mean (NaN).
             shown = None if cell_mask is None else np.bincount(
                 binning.cell_bin, weights=cell_mask, minlength=binning.n_bins) > 0
+            # Bins the hexagon filter leaves out stay gray, whatever is colored.
+            kept = dataset.kept_bins(idx, binning)
+            if not kept.all():
+                shown = kept if shown is None else shown & kept
+                channels = {label: (None if values is None else np.where(kept, values, np.nan), bipolar)
+                            for label, (values, bipolar) in channels.items()}
             self._update_bin_histograms(channel_values, channels, genes if is_gene else None, binning, mask)
         else:
             self._update_histograms(channel_values, mask)
@@ -768,7 +774,7 @@ class ColorControls:
             parts = [local]
             name = genes[label] if genes is not None else self.channel_widgets[label]["pathway"].value
             for sid in others:
-                key = (genes is not None, name, width, sid, mask_key)
+                key = (genes is not None, name, width, sid, mask_key, dataset.hex_filter)
                 cached = self._bin_values_cache.get(key)
                 if cached is None or cached[0] is not values:  # e.g. a recomputed pathway score
                     idx = dataset.sample_indices(sid)
@@ -777,6 +783,7 @@ class ColorControls:
                     result = (self._bin_channel_values(dataset, genes[label], values, idx, b, cell_mask)
                               if genes is not None
                               else b.mean(values[idx], cell_mask))
+                    result = np.where(dataset.kept_bins(idx, b), result, np.nan)
                     self._bin_values_cache.pop(key, None)
                     if len(self._bin_values_cache) >= _BIN_VALUES_CACHE_SIZE:
                         self._bin_values_cache.pop(next(iter(self._bin_values_cache)))

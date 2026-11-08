@@ -49,10 +49,11 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         name="Average cells into hexagonal bins",
         value=largest_sample > hexbin.BINNING_THRESHOLD, margin=(8, 5, 2, 5),
     )
+    dataset.hex_filter = state.hex_filter.value  # before anything is drawn
     bin_hint = pn.pane.HTML(
         f"Much faster for huge samples; on by default above {hexbin.BINNING_THRESHOLD:,} cells. "
-        "Each bin shows a gene's expression from its cells' summed counts (normalized per bin), "
-        "or their most common selected category.",
+        "Each bin shows a gene's expression from its cells' summed counts, or their most common "
+        "selected category. Bins with too little data are gray - see the Leiden panel's hexagon filter.",
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     # Edge lengths are converted to widths in cell spacings with the largest sample's spacing.
@@ -415,6 +416,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         elif binning is not None:
             note = (f"Shown as {binning.n_bins:,} hexagonal bins "
                     f"(~{len(idx) / binning.n_bins:.1f} cells each)")
+            n_left_out = binning.n_bins - int(dataset.kept_bins(idx, binning).sum())
+            if n_left_out:
+                note += f", {n_left_out:,} left out for too little data"
             if detail_toggle.value:
                 note += f" - zoom in to under {detail_max.value:,} cells in view to see individual cells"
             note += " - change under Display settings"
@@ -492,6 +496,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     state.gene_filter.listeners.append(on_gene_filter)
 
+    def on_hex_filter(hex_filter):
+        dataset.hex_filter = hex_filter
+        if bin_toggle.value:
+            with pn.io.hold():
+                redraw_full(sample_select.value)
+
+    state.hex_filter.listeners.append(on_hex_filter)
+
     # Re-run Leiden at another resolution without going back to the landing page; each
     # resolution gets its own obs column, so earlier clusterings stay available.
     leiden_resolution = pn.widgets.FloatInput(
@@ -518,6 +530,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return hexbin.width_factor(leiden_width.value, hex_spacing)
 
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
+    hex_filter_box = pn.Column(state.hex_filter.layout, sizing_mode="stretch_width", margin=0)
     # Before any other watcher: an emptied number box gets its last value back.
     keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
 
@@ -530,12 +543,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def update_leiden_target(*events):
         hexes = leiden_unit.value == clustering.HEXAGONS
-        leiden_width.visible = hexes
+        leiden_width.visible = hex_filter_box.visible = hexes
         same = bin_toggle.value and leiden_width.value == bin_width.value
         leiden_target.object = (
             f"Clusters and cell-types hexagons with {leiden_width.value:g} pts edges "
             + ("(the ones shown) " if same else "")
-            + ("by their spots' summed counts (normalized per hexagon), " if dataset.counts is not None
+            + ("by their spots' summed counts, " if dataset.counts is not None
                else "by their spots' mean expression, ")
             + "then gives each spot / cell its hexagon's result - "
             "for sub-cellular data such as Xenium or Open-ST. "
@@ -543,8 +556,15 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         ) + "The result is added as a new field to color by." + (
             f"<br>{width_note(leiden_factor())}" if hexes else "")
 
+    def update_hex_filter_info(*events):
+        if leiden_unit.value == clustering.HEXAGONS:
+            state.hex_filter.show(dataset, sample_select.value, leiden_factor(), dataset.counts)
+
     update_leiden_target()
     update_bin_width_note()
+    update_hex_filter_info()
+    leiden_unit.param.watch(update_hex_filter_info, "value")
+    leiden_width.param.watch(update_hex_filter_info, "value")
     bin_width.param.watch(update_bin_width_note, "value")
     for w in (leiden_unit, leiden_width, bin_toggle, bin_width):
         w.param.watch(update_leiden_target, "value")
@@ -645,7 +665,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
-        leiden_unit, leiden_width, leiden_target, state.gene_filter.layout, typing.layout,
+        leiden_unit, leiden_width, leiden_target, hex_filter_box, state.gene_filter.layout, typing.layout,
         pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
         leiden_status, rerun_row, typing_results,
         title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
@@ -678,6 +698,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             with pn.io.hold():
                 update_bin_width_note()
                 update_leiden_target()
+                update_hex_filter_info()
                 controls.update_category_counts()
                 regions_panel.refresh()
                 redraw_full(event.new)

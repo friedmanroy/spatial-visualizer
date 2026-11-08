@@ -17,12 +17,37 @@ import scipy.sparse as sp
 BINNING_THRESHOLD = 1_000_000
 #: the automatic hexagon width tiles the largest sample's bounding rectangle with about this many hexagons
 DEFAULT_HEXAGONS = 50_000
+#: hexagons with fewer spots than this fraction of their sample's median have too little data
+#: to analyse (a tile's rim, fiducial marks); low counts alone can be real tissue (white matter)
+DEFAULT_MIN_COVERAGE = 0.5
+#: hexagons with fewer summed counts than this have too little data at any hexagon size
+DEFAULT_MIN_COUNTS = 15
+#: genes must be detected in at least this fraction of hexagons to count as variable: scaling
+#: blows up genes seen in a handful of hexagons, and clusters would follow those stray counts
+DEFAULT_MIN_GENE_DETECTION = 0.02
 #: hexagon widths stay within this many cell spacings
 _MIN_WIDTH_FACTOR, _MAX_WIDTH_FACTOR = 1.0, 100.0
 #: what the hexagon edge length inputs describe them with
 EDGE_LABEL = "Hexagon edge length (pts)"
 EDGE_DESCRIPTION = ("How long each of a hexagon's 6 sides is, in pts: the units of the coordinates in "
                     "obsm['spatial']. A hexagon holds more spots / cells the longer they are.")
+
+
+@dataclass(frozen=True)
+class HexFilter:
+    """Which hexagons are analysed, and how their summed counts become profiles."""
+    min_coverage: float = DEFAULT_MIN_COVERAGE  # fraction of the sample's median spots per hexagon
+    min_counts: int = DEFAULT_MIN_COUNTS  # summed counts per hexagon
+    normalize: bool = True  # normalize_total before the log1p, which always applies
+    min_gene_detection: float = DEFAULT_MIN_GENE_DETECTION  # of the analysed hexagons, for variable genes
+
+    def keep(self, binning: "HexBinning", totals: np.ndarray | None = None) -> np.ndarray:
+        """Boolean mask over `binning`'s bins; `totals` (their summed counts) is None when
+        the data holds no counts to test."""
+        if binning.n_bins == 0:
+            return np.zeros(0, dtype=bool)
+        keep = binning.counts >= self.min_coverage * np.median(binning.counts)
+        return keep if totals is None else keep & (totals >= self.min_counts)
 
 
 @dataclass(frozen=True)
@@ -42,6 +67,13 @@ class HexBinning:
     def sum_matrix(self) -> sp.csr_matrix:
         """(n_bins, n_cells): sum_matrix @ values = per-bin sum."""
         return sp.csr_matrix(sp.diags(self.counts.astype(np.float32)) @ self.mean_matrix)
+
+    def subset(self, keep: np.ndarray) -> tuple[np.ndarray, "HexBinning"]:
+        """(mask over the cells of the bins in `keep`, a binning of only those bins and cells)."""
+        cells = keep[self.cell_bin]
+        new_id = np.cumsum(keep) - 1
+        return cells, HexBinning(self.centers[keep], new_id[self.cell_bin[cells]], self.counts[keep], self.width,
+                                 sp.csr_matrix(self.mean_matrix[keep][:, np.flatnonzero(cells)]))
 
     def sum(self, values: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         """Per-bin sum of `values` (one per cell), over only the masked-in cells if given."""

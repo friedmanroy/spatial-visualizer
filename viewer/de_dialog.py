@@ -98,17 +98,23 @@ class DEDialog:
             f"<span style='color:{_UP}'><b>{n_up}</b> genes up</span> and "
             f"<span style='color:{_DOWN}'><b>{n_down}</b> down</span> in {html.escape(r.group)} "
             f"(adj. p &lt; {de.PADJ_THRESHOLD:g}, |log2 FC| ≥ {de.LFC_THRESHOLD:g})."
+            + (f"<br>Mean total counts per {r.unit[:-1]}: <b>{r.mean_total_group:,.1f}</b> in {html.escape(r.group)}, "
+               f"<b>{r.mean_total_reference:,.1f}</b> in {html.escape(r.reference)}. "
+               "The table's mean counts are raw, per gene: compare them with these totals."
+               if r.mean_total_group is not None else "")
             + ("<br>The expression wasn't log-transformed, so it was log1p'd for this comparison."
                if r.log1p_applied else ""),
             sizing_mode="stretch_width", margin=(4, 5), styles={"font-size": "13px"},
         )
         labeled = r.labeled_table()
         pct_cols = [c for c in labeled.columns if c.startswith("% ")]
+        count_cols = [c for c in labeled.columns if c.startswith("Mean counts ")]
         table = pn.widgets.Tabulator(
-            labeled[["Gene", "log2 FC", "Adj. p-value", *pct_cols, "Direction"]],
+            labeled[["Gene", "log2 FC", "Adj. p-value", *pct_cols, *count_cols, "Direction"]],
             show_index=False, disabled=True, selectable="checkbox", pagination="local", page_size=14,
             sizing_mode="stretch_both", min_height=300, layout="fit_data_stretch",
             formatters={"log2 FC": {"type": "money", "precision": 2},
+                        **{c: {"type": "money", "precision": 3} for c in count_cols},
                         "Adj. p-value": ScientificFormatter(precision=2)},
             header_filters={"Gene": {"type": "input", "func": "like", "placeholder": "Search"},
                             "Direction": {"type": "list", "func": "=", "valuesLookup": True}},

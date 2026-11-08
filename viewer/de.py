@@ -70,17 +70,21 @@ class DEResult:
     unit: str = "cells"  # what each compared row is: "cells" or "hexagons"
     n_group_cells: int = 0  # cells pooled into the group's hexagons (hexagons only)
     n_reference_cells: int = 0
+    # Mean total counts per compared unit, how deeply each side was sequenced (None without counts).
+    mean_total_group: float | None = None
+    mean_total_reference: float | None = None
 
     @property
     def title(self) -> str:
         return f"{self.group} vs {self.reference}"
 
     def labeled_table(self) -> pd.DataFrame:
-        """The table with its "% in group" / "% in reference" columns named after where
-        each side's cells came from (e.g. "% in Region 12", "% not in Region 12"), as
-        shown and exported."""
-        return self.table.rename(columns={"% in group": f"% in {self.group}",
-                                          "% in reference": self._reference_pct_label()})
+        """The table with its per-side columns named after where each side's cells came
+        from (e.g. "% in Region 12", "Mean counts not in Region 12"), as shown and exported."""
+        reference = self._reference_pct_label()
+        return self.table.rename(columns={"% in group": f"% in {self.group}", "% in reference": reference,
+                                          "Mean counts in group": f"Mean counts in {self.group}",
+                                          "Mean counts in reference": f"Mean counts {reference[2:]}"})
 
     def _reference_pct_label(self) -> str:
         # The reference labels come from comparisons().
@@ -158,11 +162,11 @@ def is_log1p(dataset, X) -> bool:
 
 
 def _hex_profiles(dataset, cells: np.ndarray, width_factor: float):
-    """(one row per hexagon of the Spatial view's `width_factor` bins that `cells` mostly
-    cover - their pooled expression, before any log1p - , whether those rows are already
-    log1p'd, how many of `cells` went into them). Pooled like clustering.hex_profiles:
-    with the pre-normalization counts kept, the bin's summed counts, normalize_total +
-    log1p; otherwise the mean of its cells' .X."""
+    """(one row per hexagon of the Spatial view's `width_factor` bins that dataset.hex_filter
+    analyses and `cells` mostly cover - their pooled expression, unlogged - , whether those
+    rows are already log1p'd, how many of `cells` went into them). Pooled like
+    clustering.hex_profiles: with the pre-normalization counts kept, the bin's summed counts
+    (which run() normalizes, across both sides); otherwise the mean of its cells' .X."""
     summed = dataset.counts is not None
     source = dataset.counts if summed else dataset.adata.X
     blocks, n_pooled = [], 0
@@ -174,7 +178,7 @@ def _hex_profiles(dataset, cells: np.ndarray, width_factor: float):
         binning = dataset.hex_binning(sid, width_factor)
         bins = binning.cell_bin[np.searchsorted(idx, side)]
         uniq, inverse, n_in = np.unique(bins, return_inverse=True, return_counts=True)
-        kept = n_in > MIN_HEX_SHARE * binning.counts[uniq]
+        kept = (n_in > MIN_HEX_SHARE * binning.counts[uniq]) & dataset.kept_bins(idx, binning)[uniq]
         rows = kept[inverse]
         if not rows.any():
             continue
@@ -189,14 +193,28 @@ def _hex_profiles(dataset, cells: np.ndarray, width_factor: float):
     X = sp.vstack(blocks, format="csr") if sp.issparse(blocks[0]) else np.vstack([np.asarray(b) for b in blocks])
     if not summed:
         return X, is_log1p(dataset, source[cells[:_LOG_CHECK_CELLS]]), n_pooled
-    bins = ad.AnnData(X.astype(np.float32))
-    sc.pp.normalize_total(bins)
+    return X, False, n_pooled
+
+
+def _log_pooled_counts(dataset, g_X, r_X):
+    """Both sides' summed counts log1p'd, normalized first if dataset.hex_filter says so - to
+    one target: each side's own median total would shift every gene's fold change whenever
+    the sides differ in depth."""
+    stack = sp.vstack if sp.issparse(g_X) else np.vstack
+    bins = ad.AnnData(stack([g_X, r_X]).astype(np.float32))
+    if dataset.hex_filter.normalize:
+        sc.pp.normalize_total(bins)
     sc.pp.log1p(bins)
-    return bins.X, True, n_pooled
+    return bins.X[:g_X.shape[0]], bins.X[g_X.shape[0]:]
 
 
 #: how many of a side's cells hexagon DE inspects to tell whether .X is log1p'd
 _LOG_CHECK_CELLS = 20_000
+
+
+def _mean_counts(X, genes: np.ndarray) -> np.ndarray:
+    """Each of `genes`' (column indices) mean over the rows of the count matrix X."""
+    return np.asarray(X[:, genes].mean(axis=0)).ravel()
 
 
 def _subsample(cells: np.ndarray, max_cells: int, rng) -> np.ndarray:
@@ -223,6 +241,7 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
         r = _subsample(ref_cells, max_cells, rng)
         X = dataset.expression().X[np.concatenate([g, r])][:, keep]
         logged = is_log1p(dataset, X)
+        g_counts, r_counts = (None, None) if dataset.counts is None else (dataset.counts[g], dataset.counts[r])
     else:
         unit = "hexagons"
         g_X, g_logged, n_group_cells = _hex_profiles(dataset, np.sort(group_cells), hex_width)
@@ -231,10 +250,17 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
         r_total = 0 if r_X is None else r_X.shape[0]
         if g_total < 3 or r_total < 3:
             raise ValueError(f"{group_label} vs {ref_label}: each side needs at least 3 hexagons more than "
-                             f"half inside it (has {g_total} and {r_total}) - try narrower bins, or "
-                             f"individual spots.")
+                             f"half inside it and passing the hexagon filter (has {g_total} and {r_total}) "
+                             f"- try narrower bins, a looser filter, or individual spots.")
+        g_counts, r_counts = None, None
+        if dataset.counts is not None:
+            g_counts, r_counts = g_X, r_X
+            g_X, r_X = _log_pooled_counts(dataset, g_X, r_X)
+            g_logged = r_logged = True
         g = _subsample(np.arange(g_total), max_cells, rng)
         r = _subsample(np.arange(r_total), max_cells, rng)
+        if g_counts is not None:
+            g_counts, r_counts = g_counts[g], r_counts[r]
         stack = sp.vstack if sp.issparse(g_X) else np.vstack
         X = stack([g_X[g][:, keep], r_X[r][:, keep]])
         logged = g_logged and r_logged
@@ -259,8 +285,16 @@ def run(dataset, group_label: str, group_cells: np.ndarray, ref_label: str, ref_
         if col in df.columns:
             df[col] = (df[col] * 100).round(1)
     df["log2 FC"] = df["log2 FC"].astype(float)
+    mean_total_g, mean_total_r = None, None
+    if g_counts is not None:
+        gene_names = dataset.adata.var_names[keep].astype(str)
+        for col, counts in (("Mean counts in group", g_counts), ("Mean counts in reference", r_counts)):
+            df[col] = pd.Series(_mean_counts(counts, keep), index=gene_names).reindex(df["Gene"]).to_numpy()
+        mean_total_g = float(np.asarray(g_counts.sum(axis=1)).mean())
+        mean_total_r = float(np.asarray(r_counts.sum(axis=1)).mean())
     significant = df["Adj. p-value"] < PADJ_THRESHOLD
     df["Direction"] = np.where(significant & (df["log2 FC"] >= LFC_THRESHOLD), "up",
                                np.where(significant & (df["log2 FC"] <= -LFC_THRESHOLD), "down", ""))
     return DEResult(group_label, ref_label, len(g), len(r), g_total, r_total,
-                    method, df.reset_index(drop=True), log1p_applied, unit, n_group_cells, n_ref_cells)
+                    method, df.reset_index(drop=True), log1p_applied, unit, n_group_cells, n_ref_cells,
+                    mean_total_g, mean_total_r)
