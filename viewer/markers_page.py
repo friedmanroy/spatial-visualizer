@@ -317,7 +317,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
     refresh_imported()
 
     hint = lambda text: pn.pane.HTML(text, styles=HINT_STYLE, sizing_mode="stretch_width")
-    return pn.Column(
+    page = pn.Column(
         "### Your marker gene sets",
         hint(
             "Each row is a cell type you added and the marker genes that identify it. <b>Edit a gene list</b> by "
@@ -361,5 +361,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
         sizing_mode="stretch_width",
         max_width=1100,
         margin=(10, 20),
-        scroll=True,
     )
+    # Every tab is laid out even while hidden, so this one scrolls within the tab's height,
+    # with its margin inside that height so it can't overflow the page.
+    return pn.Column(page, scroll=True, sizing_mode="stretch_both", margin=0)

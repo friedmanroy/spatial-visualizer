@@ -113,7 +113,7 @@ def build_pathways_page(state) -> pn.viewable.Viewable:
     # Pathways can also be added elsewhere (Cell types tab -> "Show as pathway").
     state.pathway_listeners.append(lambda name: refresh_custom_list())
 
-    return pn.Column(
+    page = pn.Column(
         "### Add a pathway",
         "Paste a list of genes to use as a gene set in the **Gene & Pathway** coloring. "
         "Adding a pathway with the name of one you added before replaces it. Your pathways are "
@@ -131,3 +131,6 @@ def build_pathways_page(state) -> pn.viewable.Viewable:
         width=560,
         margin=(10, 20),
     )
+    # Every tab is laid out even while hidden, so this one scrolls within the tab's height
+    # rather than stretching the other tabs (and the page) to fit it.
+    return pn.Column(page, scroll=True, sizing_mode="stretch_both", margin=0)

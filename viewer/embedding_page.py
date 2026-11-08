@@ -400,6 +400,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
         controls.layout,
         width=380,
         sizing_mode="stretch_height",
+        scroll=True,
     )
     plot_area = pn.Column(plot_header, bokeh_pane, sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
