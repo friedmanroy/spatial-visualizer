@@ -15,15 +15,14 @@ import scipy.sparse as sp
 
 #: samples with more cells than this are shown hex-binned by default
 BINNING_THRESHOLD = 1_000_000
-#: the automatic hexagon width gives hexagons sides this long, in obsm['spatial'] units
-#: (taken to be microns)
-DEFAULT_EDGE_MICRONS = 7.0
+#: the automatic hexagon width tiles the largest sample's bounding rectangle with about this many hexagons
+DEFAULT_HEXAGONS = 50_000
 #: hexagon widths stay within this many cell spacings
 _MIN_WIDTH_FACTOR, _MAX_WIDTH_FACTOR = 1.0, 100.0
 #: what the hexagon edge length inputs describe them with
-EDGE_LABEL = "Hexagon edge length (\u00b5m)"
-EDGE_DESCRIPTION = ("How long each of a hexagon's 6 sides is, taking the coordinates to be in \u00b5m. "
-                    "A hexagon holds more spots / cells the longer they are.")
+EDGE_LABEL = "Hexagon edge length (pts)"
+EDGE_DESCRIPTION = ("How long each of a hexagon's 6 sides is, in pts: the units of the coordinates in "
+                    "obsm['spatial']. A hexagon holds more spots / cells the longer they are.")
 
 
 @dataclass(frozen=True)
@@ -85,8 +84,8 @@ class HexBinning:
 
 def edge_length(factor: float, spacing: float) -> float:
     """Side length of a hexagon `factor` cell spacings wide (flat to flat), in the units
-    of `spacing`."""
-    return round(float(factor * spacing / np.sqrt(3)), 2)
+    of `spacing`; to 4 significant digits, as coordinates can be on any scale."""
+    return float(f"{factor * spacing / np.sqrt(3):.4g}")
 
 
 def width_factor(edge: float, spacing: float) -> float:
@@ -96,29 +95,44 @@ def width_factor(edge: float, spacing: float) -> float:
     return round(float(np.clip(factor, _MIN_WIDTH_FACTOR, _MAX_WIDTH_FACTOR)), 3)
 
 
-def default_width_factor(spacing: float) -> float:
-    """Hexagon width, in cell spacings, giving sides DEFAULT_EDGE_MICRONS long; never
-    under one cell spacing."""
-    return width_factor(DEFAULT_EDGE_MICRONS, spacing)
+def hexagon_count(extent: tuple[float, float], factor: float, spacing: float) -> float:
+    """About how many hexagons `factor` cell spacings wide tile a rectangle of `extent`
+    (width, height), each covering sqrt(3)/2 * width^2."""
+    return extent[0] * extent[1] / (np.sqrt(3) / 2 * (factor * spacing) ** 2)
 
 
-def edge_bounds(spacing: float) -> dict:
-    """The start and end of a hexagon edge length input."""
-    return {"start": edge_length(_MIN_WIDTH_FACTOR, spacing), "end": edge_length(_MAX_WIDTH_FACTOR, spacing)}
+def default_width_factor(extent: tuple[float, float], spacing: float) -> float:
+    """Hexagon width, in cell spacings, tiling a sample of `extent` with about
+    DEFAULT_HEXAGONS hexagons; as near as width_factor's limits allow."""
+    area = extent[0] * extent[1]
+    if area <= 0:
+        return _MIN_WIDTH_FACTOR
+    return width_factor(np.sqrt(area / DEFAULT_HEXAGONS / (3 * np.sqrt(3) / 2)), spacing)
 
 
-def width_note(width_spots: float, spacing: float, factor: float | None, subject: str = "This sample") -> str:
-    """One line for under a hexagon edge length input: how wide the sample is in spots,
-    the side length of and how many hexagons `factor` spots wide fit across it, and the
-    automatic side length."""
-    if width_spots <= 0:
+def edge_input_range(spacing: float) -> dict:
+    """The start, end and step of a hexagon edge length input."""
+    start = edge_length(_MIN_WIDTH_FACTOR, spacing)
+    return {"start": start, "end": edge_length(_MAX_WIDTH_FACTOR, spacing), "step": float(f"{start:.1g}")}
+
+
+def _rounded(count: float) -> str:
+    """An estimated count to 3 significant digits."""
+    return f"{float(f'{count:.3g}'):,.0f}"
+
+
+def width_note(extent: tuple[float, float], spacing: float, factor: float | None, subject: str = "This sample") -> str:
+    """One line for under a hexagon edge length input: the sample's extent, about how many
+    hexagons `factor` cell spacings wide tile it, and the automatic edge length."""
+    if extent[0] * extent[1] <= 0:
         return ""
-    auto = edge_length(default_width_factor(spacing), spacing)
-    text = f"{subject} is about {width_spots:,.0f} spots / cells wide"
+    text = f"{subject} spans about {extent[0]:,.4g} x {extent[1]:,.4g} pts"
     if factor:
-        text += (f": {edge_length(factor, spacing):.3g} \u00b5m edges make hexagons {factor:g} spots wide, "
-                 f"~{width_spots / factor:,.0f} across it")
-    return text + f" (automatic: {auto:.3g} \u00b5m, if the coordinates are in \u00b5m)."
+        text += (f": {edge_length(factor, spacing):g} pts edges make "
+                 f"~{_rounded(hexagon_count(extent, factor, spacing))} hexagons")
+    auto = default_width_factor(extent, spacing)
+    return text + (f" (automatic: {edge_length(auto, spacing):g} pts, ~{_rounded(hexagon_count(extent, auto, spacing))} "
+                   "hexagons; estimated as if the tissue filled that rectangle).")
 
 
 def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:

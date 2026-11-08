@@ -119,13 +119,13 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     )
     # The width the spatial data was last clustered with, if on hexagons; else automatic.
     spatial = state.spatial
-    width_spots = spatial.sample_width_spots(spatial.largest_sample()) if spatial is not None else 0.0
+    extent = spatial.sample_extent(spatial.largest_sample()) if spatial is not None else (0.0, 0.0)
     spacing = spatial.sample_lattice(spatial.largest_sample()).spacing if spatial is not None else 1.0
     used = list(spatial.hex_clusterings.values()) if spatial is not None else []
     hex_width = pn.widgets.FloatInput(
-        name=hexbin.EDGE_LABEL, value=hexbin.edge_length(used[-1] if used else hexbin.default_width_factor(spacing), spacing),
-        step=0.5, sizing_mode="stretch_width",
-        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(spacing),
+        name=hexbin.EDGE_LABEL, value=hexbin.edge_length(used[-1] if used else hexbin.default_width_factor(extent, spacing), spacing),
+        sizing_mode="stretch_width",
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_input_range(spacing),
     )
 
     def hex_factor() -> float:
@@ -133,9 +133,9 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
 
     keep_filled(n_pcs_input, n_neighbors_input, hex_width)
     subject = "The largest sample" if spatial is not None and len(spatial.sample_ids) > 1 else "The sample"
-    hex_width_note = pn.pane.HTML(hexbin.width_note(width_spots, spacing, hex_factor(), subject), styles=HINT_STYLE,
+    hex_width_note = pn.pane.HTML(hexbin.width_note(extent, spacing, hex_factor(), subject), styles=HINT_STYLE,
                                   sizing_mode="stretch_width", margin=(0, 5, 4, 5))
-    hex_width.param.watch(lambda e: setattr(hex_width_note, "object", hexbin.width_note(width_spots, spacing, hex_factor(), subject)),
+    hex_width.param.watch(lambda e: setattr(hex_width_note, "object", hexbin.width_note(extent, spacing, hex_factor(), subject)),
                           "value")
     compute_hint = pn.pane.HTML(
         "<b>Hexagons</b>: one point per hexagonal bin of the spatial data (its spots' mean "
@@ -337,7 +337,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         spatial = state.spatial
         hexes = compute_unit.value == clustering.HEXAGONS
-        detail = (f"hexagons with {hex_width.value:g} \u00b5m edges over {spatial.adata.n_obs:,} cells"
+        detail = (f"hexagons with {hex_width.value:g} pts edges over {spatial.adata.n_obs:,} cells"
                   if hexes else _embedding_detail(spatial.adata.n_obs))
         try:
             async with busy.show("Computing PCA and UMAP from the spatial data...", detail):

@@ -62,9 +62,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         # The width the landing page clustered with, if it did (the automatic one unless
         # changed there, so what's drawn matches what was clustered); else the automatic one.
         value=hexbin.edge_length(list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings
-                                 else hexbin.default_width_factor(hex_spacing), hex_spacing),
-        step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
-        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(hex_spacing),
+                                 else dataset.default_hex_factor(), hex_spacing),
+        sizing_mode="stretch_width", visible=bin_toggle.value,
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_input_range(hex_spacing),
     )
 
     def bin_factor() -> float:
@@ -510,9 +510,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     leiden_width = pn.widgets.FloatInput(
         name=hexbin.EDGE_LABEL,
         value=bin_width.value,
-        step=0.5,
         sizing_mode="stretch_width",
-        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(hex_spacing),
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_input_range(hex_spacing),
     )
 
     def leiden_factor() -> float:
@@ -524,7 +523,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def width_note(factor) -> str:
         sample = sample_select.value
-        return hexbin.width_note(dataset.sample_width_spots(sample), dataset.sample_lattice(sample).spacing, factor)
+        return hexbin.width_note(dataset.sample_extent(sample), dataset.sample_lattice(sample).spacing, factor)
 
     def update_bin_width_note(*events):
         bin_width_note.object = width_note(bin_factor())
@@ -534,7 +533,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_width.visible = hexes
         same = bin_toggle.value and leiden_width.value == bin_width.value
         leiden_target.object = (
-            f"Clusters and cell-types hexagons with {leiden_width.value:g} \u00b5m edges "
+            f"Clusters and cell-types hexagons with {leiden_width.value:g} pts edges "
             + ("(the ones shown) " if same else "")
             + ("by their spots' summed counts (normalized per hexagon), " if dataset.counts is not None
                else "by their spots' mean expression, ")
@@ -554,7 +553,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_status.object = ""
         hexes = leiden_unit.value == clustering.HEXAGONS
         gene_filter = state.gene_filter.value
-        detail = (f"on hexagons with {leiden_width.value:g} \u00b5m edges" if hexes
+        detail = (f"on hexagons with {leiden_width.value:g} pts edges" if hexes
                   else f"on all {dataset.adata.n_obs:,} cells") + (
             f", resolution {leiden_resolution.value:g}, {gene_filter.describe()}")
         try:

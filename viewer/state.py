@@ -191,12 +191,17 @@ class Dataset:
         """The sample with the most cells."""
         return max(self._sample_indices, key=lambda sid: len(self._sample_indices[sid]))
 
-    def sample_width_spots(self, sample_id: str) -> float:
-        """How many cell spacings the sample spans horizontally (0 if under 2 cells)."""
+    def sample_extent(self, sample_id: str) -> tuple[float, float]:
+        """(width, height) the sample's cells span, in coordinate units."""
         coords = self.sample_coords(sample_id)
-        if len(coords) < 2:
-            return 0.0
-        return float(np.ptp(coords[:, 0])) / self.sample_lattice(sample_id).spacing
+        if len(coords) == 0:
+            return 0.0, 0.0
+        return float(np.ptp(coords[:, 0])), float(np.ptp(coords[:, 1]))
+
+    def default_hex_factor(self) -> float:
+        """The automatic hexagon width, in cell spacings, from the largest sample."""
+        largest = self.largest_sample()
+        return hexbin.default_width_factor(self.sample_extent(largest), self.sample_lattice(largest).spacing)
 
     def sample_lattice(self, sample_id: str) -> spatial_plot.Lattice:
         if sample_id not in self._lattice_cache:

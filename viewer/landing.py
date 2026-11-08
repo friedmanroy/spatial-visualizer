@@ -79,12 +79,12 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         "<b>Individual cells</b>: for segmented single-cell data.",
         styles=HINT_STYLE, width=420, visible=False,
     )
-    # Filled in with the suggested width (hexbin.DEFAULT_EDGE_MICRONS sides, from the largest
-    # sample's spacing) once the file is loaded and whenever the sample column changes.
+    # Filled in with the suggested edge length (about hexbin.DEFAULT_HEXAGONS hexagons over the
+    # largest sample) once the file is loaded and whenever the sample column changes.
     leiden_width = pn.widgets.FloatInput(
         name=f"{hexbin.EDGE_LABEL} (empty = automatic)", value=None,
-        placeholder=f"automatic ({hexbin.DEFAULT_EDGE_MICRONS:g} \u00b5m sides)",
-        start=1.0, end=100.0, step=0.5, width=340,
+        placeholder=f"automatic (~{hexbin.DEFAULT_HEXAGONS:,} hexagons)",
+        width=340,
         description=hexbin.EDGE_DESCRIPTION,
     )
     leiden_width_note = pn.pane.HTML("", styles=HINT_STYLE, width=420, margin=(0, 10, 6, 10))
@@ -114,19 +114,19 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         open_btn, open_status, visible=False,
     )
 
-    holder = {"dataset": None, "field_checkboxes": {}, "width_spots": 0.0, "spacing": 0.0, "width_subject": "The sample"}
+    holder = {"dataset": None, "field_checkboxes": {}, "extent": (0.0, 0.0), "spacing": 1.0, "width_subject": "The sample"}
 
     def leiden_factor() -> float | None:
         """The hexagon width asked for, in cell spacings (None if automatic)."""
         return hexbin.width_factor(leiden_width.value, holder["spacing"]) if leiden_width.value else None
 
     def update_width_note(*events):
-        leiden_width_note.object = hexbin.width_note(holder["width_spots"], holder["spacing"], leiden_factor(),
+        leiden_width_note.object = hexbin.width_note(holder["extent"], holder["spacing"], leiden_factor(),
                                                      holder["width_subject"])
 
     async def suggest_width(*events):
         """Splits the samples as chosen, measures the largest one's width in spots and
-        fills in the hexagon width giving sides DEFAULT_EDGE_MICRONS long."""
+        fills in the hexagon edge length giving about DEFAULT_HEXAGONS hexagons over it."""
         ds = holder["dataset"]
         if ds is None:
             return
@@ -135,13 +135,13 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         def measure():
             ds.set_sample_column(col)
             largest = ds.largest_sample()
-            return ds.sample_width_spots(largest), ds.sample_lattice(largest).spacing
+            return ds.sample_extent(largest), ds.sample_lattice(largest).spacing
 
-        holder["width_spots"], holder["spacing"] = await asyncio.to_thread(measure)
+        holder["extent"], holder["spacing"] = await asyncio.to_thread(measure)
         holder["width_subject"] = "The largest sample" if len(ds.sample_ids) > 1 else "The sample"
-        suggested = hexbin.edge_length(hexbin.default_width_factor(holder["spacing"]), holder["spacing"])
+        suggested = hexbin.edge_length(hexbin.default_width_factor(holder["extent"], holder["spacing"]), holder["spacing"])
         leiden_width.placeholder = f"automatic: {suggested:g}"
-        leiden_width.param.update(value=suggested, **hexbin.edge_bounds(holder["spacing"]))
+        leiden_width.param.update(value=suggested, **hexbin.edge_input_range(holder["spacing"]))
         update_width_note()
 
     leiden_width.param.watch(update_width_note, "value")
@@ -256,9 +256,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             # The automatic width is the one the Spatial tab draws huge samples with.
             on_hexbins = leiden_unit.value == HEXAGONS
             spacing = ds.sample_lattice(ds.largest_sample()).spacing
-            width = hexbin.width_factor(leiden_width.value, spacing) if leiden_width.value else hexbin.default_width_factor(spacing)
+            width = hexbin.width_factor(leiden_width.value, spacing) if leiden_width.value else ds.default_hex_factor()
             gene_filter = state.gene_filter.value
-            detail = ((f"on hexagons with {hexbin.edge_length(width, spacing):g} \u00b5m edges over the " if on_hexbins else "on all ")
+            detail = ((f"on hexagons with {hexbin.edge_length(width, spacing):g} pts edges over the " if on_hexbins else "on all ")
                       + f"{ds.adata.n_obs:,} cells, "
                       + gene_filter.describe())
             try:
