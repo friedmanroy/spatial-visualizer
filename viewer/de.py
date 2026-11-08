@@ -45,8 +45,8 @@ LOG1P_MAX = 30
 #: a gene counts as up / down in the volcano plot and summaries past these
 LFC_THRESHOLD = 0.5
 PADJ_THRESHOLD = 0.05
-#: top_abs only picks genes detected in at least this % of the side they're higher in:
-#: the largest fold changes otherwise go to genes barely detected anywhere
+#: top_abs prefers genes detected in at least this % of the side they're higher in: the
+#: largest fold changes otherwise go to genes barely detected anywhere
 MIN_PCT_TOP = 10
 
 #: result columns, as shown in the results table
@@ -97,13 +97,23 @@ class DEResult:
         return t["Gene"].head(k).tolist()
 
     def top_abs(self, k: int) -> list[str]:
-        """The k genes with the largest |log2 FC|, up or down, among significant ones
-        detected in at least MIN_PCT_TOP % of the side they're higher in."""
-        t = self.table
-        pct_high = np.where(t["Direction"] == "up", t["% in group"], t["% in reference"])
-        t = t[(t["Direction"] != "") & (pct_high >= MIN_PCT_TOP)]
+        """The k genes with the largest |log2 FC|, up or down, among those with an adjusted
+        p-value under PADJ_THRESHOLD (among all genes if there are none), and of those the
+        ones detected in at least MIN_PCT_TOP % of the side they're higher in, if any."""
+        t = self.table.dropna(subset=["log2 FC"])
+        significant = t["Adj. p-value"] < PADJ_THRESHOLD
+        if significant.any():
+            t = t[significant]
+        pct_high = np.where(t["log2 FC"] >= 0, t["% in group"], t["% in reference"])
+        if (pct_high >= MIN_PCT_TOP).any():
+            t = t[pct_high >= MIN_PCT_TOP]
         t = t.reindex(t["log2 FC"].abs().sort_values(ascending=False).index)
         return t["Gene"].head(k).tolist()
+
+    @property
+    def any_significant(self) -> bool:
+        """Whether any gene has an adjusted p-value under PADJ_THRESHOLD."""
+        return bool((self.table["Adj. p-value"] < PADJ_THRESHOLD).any())
 
 
 def comparisons(regions, mode: str, a: str | None = None, b: str | None = None) -> list[tuple]:

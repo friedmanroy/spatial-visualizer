@@ -122,13 +122,16 @@ class DEDialog:
         )
 
         up_btn = pn.widgets.Button(name=f"Color by top {_TOP} up", button_type="primary", margin=(5, 5))
-        abs_btn = pn.widgets.Button(name=f"Color by top {_TOP} |log2 FC|", margin=(5, 5),
-                                    description=f"The significant genes changed most, up or down, among those in at least "
-                                                f"{de.MIN_PCT_TOP}% of the side they're higher in")
+        abs_btn = pn.widgets.Button(name=f"Color by top {_TOP} |log2 FC|" + ("" if r.any_significant else " (none significant)"),
+                                    margin=(5, 5),
+                                    description=(f"The genes with adj. p < {de.PADJ_THRESHOLD:g} changed most, up or down"
+                                                 if r.any_significant else
+                                                 f"No gene has adj. p < {de.PADJ_THRESHOLD:g}: the genes changed most, up or down")
+                                                + f", preferring those in at least {de.MIN_PCT_TOP}% of the side they're higher in")
         picked_btn = pn.widgets.Button(name="Color by checked genes", margin=(5, 5), disabled=True,
                                        description=f"Check up to {_TOP} genes in the table")
         up_btn.disabled = n_up == 0
-        abs_btn.disabled = n_up + n_down == 0
+        abs_btn.disabled = not r.top_abs(_TOP)
         up_btn.on_click(lambda e: self._color_by(r.top("up", _TOP)))
         abs_btn.on_click(lambda e: self._color_by(r.top_abs(_TOP)))
 
