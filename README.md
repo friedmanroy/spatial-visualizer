@@ -20,8 +20,8 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Fields-of-view / samples** - pick which obs column splits the data into samples, then
   browse between them with a dropdown or Prev/Next.
 - **Huge samples** - samples with more than a million cells are drawn as hexagonal bins
-  (by default about 250 hexagons across the sample's width - each hexagon-width box says how
-  many spots wide the sample is - adjustable under **Display settings**): each bin shows
+  (by default with a 7 µm edge length, taking the coordinates to be in microns - adjustable
+  as **Hexagon edge length** under **Display settings**): each bin shows
   a gene's expression from its cells' summed counts, normalized per bin (like the hexagons
   clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
   scores), or their most common selected category. Zoom in until at most
@@ -40,7 +40,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   used as-is and a hexagon holds its spots' mean.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
-  clusters **hexagons** (width adjustable) and every spot gets its
+  clusters **hexagons** (edge length adjustable) and every spot gets its
   hexagon's cluster - the way to cluster sub-cellular spots (Xenium transcripts, Open-ST,
   Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
   single-cell data.

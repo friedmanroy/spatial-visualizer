@@ -55,15 +55,21 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         "or their most common selected category.",
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
+    # Edge lengths are converted to widths in cell spacings with the largest sample's spacing.
+    hex_spacing = dataset.sample_lattice(dataset.largest_sample()).spacing
     bin_width = pn.widgets.FloatInput(
-        name="Bin width (in cell spacings)",
+        name=hexbin.EDGE_LABEL,
         # The width the landing page clustered with, if it did (the automatic one unless
         # changed there, so what's drawn matches what was clustered); else the automatic one.
-        value=(list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings
-               else hexbin.default_width_factor(dataset.sample_width_spots(dataset.largest_sample()))),
-        start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
-        description="How many neighboring cells wide each hexagon is; a bin k wide holds about k² cells.",
+        value=hexbin.edge_length(list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings
+                                 else hexbin.default_width_factor(hex_spacing), hex_spacing),
+        step=0.5, sizing_mode="stretch_width", visible=bin_toggle.value,
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(hex_spacing),
     )
+
+    def bin_factor() -> float:
+        return hexbin.width_factor(bin_width.value, hex_spacing)
+
     bin_width_note = pn.pane.HTML("", styles=_HINT_STYLE, margin=(0, 5, 4, 5), sizing_mode="stretch_width",
                                   visible=bin_toggle.value)
 
@@ -81,7 +87,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
 
     def get_binning(sample_id: str) -> hexbin.HexBinning | None:
-        return dataset.hex_binning(sample_id, bin_width.value) if bin_toggle.value else None
+        return dataset.hex_binning(sample_id, bin_factor()) if bin_toggle.value else None
 
     def get_display(sample_id: str):
         """(cell indices, marker positions, marker lattice, binning or None) for a sample."""
@@ -451,7 +457,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     controls = ColorControls(
         get_dataset, get_pathways, on_change=recolor_only, get_active_indices=get_active_indices,
-        get_hex_width=lambda: bin_width.value if bin_toggle.value else None,
+        get_hex_width=lambda: bin_factor() if bin_toggle.value else None,
     )
 
     def color_by_genes(genes: list[str]):
@@ -464,7 +470,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     regions_panel = RegionsPanel(
         state, fig, get_sample=lambda: sample_select.value, on_change=recolor_only,
         add_field=lambda col: add_and_announce_field(col, select=True), color_by_genes=color_by_genes,
-        get_hex_width=lambda: bin_width.value if bin_toggle.value else None,
+        get_hex_width=lambda: bin_factor() if bin_toggle.value else None,
     )
     dataset.gene_filter = state.gene_filter.value  # before the gene suggestions are filled in
     controls.refresh_for_dataset()
@@ -499,28 +505,33 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
     )
     leiden_width = pn.widgets.FloatInput(
-        name="Hexagon width (in cell spacings)",
+        name=hexbin.EDGE_LABEL,
         value=bin_width.value,
-        start=1.0, end=100.0, step=0.5,
+        step=0.5,
         sizing_mode="stretch_width",
-        description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(hex_spacing),
     )
+
+    def leiden_factor() -> float:
+        return hexbin.width_factor(leiden_width.value, hex_spacing)
+
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
     # Before any other watcher: an emptied number box gets its last value back.
     keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
 
     def width_note(factor) -> str:
-        return hexbin.width_note(dataset.sample_width_spots(sample_select.value), factor)
+        sample = sample_select.value
+        return hexbin.width_note(dataset.sample_width_spots(sample), dataset.sample_lattice(sample).spacing, factor)
 
     def update_bin_width_note(*events):
-        bin_width_note.object = width_note(bin_width.value)
+        bin_width_note.object = width_note(bin_factor())
 
     def update_leiden_target(*events):
         hexes = leiden_unit.value == clustering.HEXAGONS
         leiden_width.visible = hexes
         same = bin_toggle.value and leiden_width.value == bin_width.value
         leiden_target.object = (
-            f"Clusters and cell-types hexagons {leiden_width.value:g} cell spacings wide "
+            f"Clusters and cell-types hexagons with {leiden_width.value:g} \u00b5m edges "
             + ("(the ones shown) " if same else "")
             + ("by their spots' summed counts (normalized per hexagon), " if dataset.counts is not None
                else "by their spots' mean expression, ")
@@ -528,7 +539,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             "for sub-cellular data such as Xenium or Open-ST. "
             if hexes else "Clusters and cell-types individual cells - for segmented single-cell data. "
         ) + "The result is added as a new field to color by." + (
-            f"<br>{width_note(leiden_width.value)}" if hexes else "")
+            f"<br>{width_note(leiden_factor())}" if hexes else "")
 
     update_leiden_target()
     update_bin_width_note()
@@ -540,14 +551,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         leiden_status.object = ""
         hexes = leiden_unit.value == clustering.HEXAGONS
         gene_filter = state.gene_filter.value
-        detail = (f"on hexagons {leiden_width.value:g} cell spacings wide" if hexes
+        detail = (f"on hexagons with {leiden_width.value:g} \u00b5m edges" if hexes
                   else f"on all {dataset.adata.n_obs:,} cells") + (
             f", resolution {leiden_resolution.value:g}, {gene_filter.describe()}")
         try:
             async with state.busy.show("Running Leiden clustering...", detail):
                 if hexes:
                     col, n_bins = await asyncio.to_thread(
-                        clustering.run_leiden_on_hexbins, dataset, leiden_width.value, leiden_resolution.value,
+                        clustering.run_leiden_on_hexbins, dataset, leiden_factor(), leiden_resolution.value,
                         report=state.busy.step, gene_filter=gene_filter,
                     )
                     clustered = f"{n_bins:,} hexagons"

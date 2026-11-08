@@ -120,17 +120,22 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
     # The width the spatial data was last clustered with, if on hexagons; else automatic.
     spatial = state.spatial
     width_spots = spatial.sample_width_spots(spatial.largest_sample()) if spatial is not None else 0.0
+    spacing = spatial.sample_lattice(spatial.largest_sample()).spacing if spatial is not None else 1.0
     used = list(spatial.hex_clusterings.values()) if spatial is not None else []
     hex_width = pn.widgets.FloatInput(
-        name="Hexagon width (in cell spacings)", value=used[-1] if used else hexbin.default_width_factor(width_spots),
-        start=1.0, end=100.0, step=0.5, sizing_mode="stretch_width",
-        description="How many neighboring spots / cells wide each hexagon is; a hexagon k wide holds about k² of them.",
+        name=hexbin.EDGE_LABEL, value=hexbin.edge_length(used[-1] if used else hexbin.default_width_factor(spacing), spacing),
+        step=0.5, sizing_mode="stretch_width",
+        description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_bounds(spacing),
     )
+
+    def hex_factor() -> float:
+        return hexbin.width_factor(hex_width.value, spacing)
+
     keep_filled(n_pcs_input, n_neighbors_input, hex_width)
     subject = "The largest sample" if spatial is not None and len(spatial.sample_ids) > 1 else "The sample"
-    hex_width_note = pn.pane.HTML(hexbin.width_note(width_spots, hex_width.value, subject), styles=HINT_STYLE,
+    hex_width_note = pn.pane.HTML(hexbin.width_note(width_spots, spacing, hex_factor(), subject), styles=HINT_STYLE,
                                   sizing_mode="stretch_width", margin=(0, 5, 4, 5))
-    hex_width.param.watch(lambda e: setattr(hex_width_note, "object", hexbin.width_note(width_spots, e.new, subject)),
+    hex_width.param.watch(lambda e: setattr(hex_width_note, "object", hexbin.width_note(width_spots, spacing, hex_factor(), subject)),
                           "value")
     compute_hint = pn.pane.HTML(
         "<b>Hexagons</b>: one point per hexagonal bin of the spatial data (its spots' mean "
@@ -332,11 +337,11 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         spatial = state.spatial
         hexes = compute_unit.value == clustering.HEXAGONS
-        detail = (f"hexagons {hex_width.value:g} cell spacings wide over {spatial.adata.n_obs:,} cells"
+        detail = (f"hexagons with {hex_width.value:g} \u00b5m edges over {spatial.adata.n_obs:,} cells"
                   if hexes else _embedding_detail(spatial.adata.n_obs))
         try:
             async with busy.show("Computing PCA and UMAP from the spatial data...", detail):
-                ds = (await asyncio.to_thread(_hexagon_dataset, spatial, hex_width.value, busy.step)
+                ds = (await asyncio.to_thread(_hexagon_dataset, spatial, hex_factor(), busy.step)
                       if hexes else spatial)
                 await asyncio.to_thread(_compute_embedding, ds, n_pcs_input.value, n_neighbors_input.value,
                                         busy.step, state.gene_filter.value)
