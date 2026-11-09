@@ -7,9 +7,13 @@ from __future__ import annotations
 
 import threading
 
+import anndata as ad
+import h5py
 import numpy as np
+import pandas as pd
 import scanpy as sc
 import scipy.sparse as sp
+from anndata.io import read_elem
 
 from . import clustering
 from . import fields as fields_mod
@@ -25,6 +29,24 @@ _BINNING_WIDTHS_KEPT = 3
 _TOP_K_BUDGET = 16_000_000
 #: the most variable genes of spots kept as raw counts are ranked on this many random spots
 _HVG_SAMPLE = 100_000
+#: the obsm entries the viewer reads; loading leaves the others out of memory
+_OBSM_USED = ("spatial", "X_pca", "X_umap")
+
+
+def read_viewer_h5ad(path: str):
+    """An AnnData of the parts of an .h5ad the viewer uses: X, obs, var, uns and _OBSM_USED.
+    Nothing here reads layers, raw, obsp, varp, varm or other obsm entries, and on huge files
+    those can outweigh X itself. Files in the old layout, not readable piece by piece, are read whole."""
+    with h5py.File(path, "r") as f:
+        if not all(isinstance(f.get(k), h5py.Group) and f[k].attrs.get("encoding-type") == "dataframe"
+                   for k in ("obs", "var")) or not isinstance(f.get("obsm", f), h5py.Group):
+            return sc.read_h5ad(path)
+        # X last: reading spot names briefly takes far more memory than holding them does.
+        obs, var = read_elem(f["obs"]), read_elem(f["var"])
+        obsm = {k: read_elem(f["obsm"][k]) for k in _OBSM_USED if k in f.get("obsm", ())}
+        uns = read_elem(f["uns"]) if "uns" in f else {}
+        X = read_elem(f["X"]) if "X" in f else None
+    return ad.AnnData(X=X, obs=obs, var=var, obsm=obsm, uns=uns)
 
 
 def top_k_per_row(X, k: int, exclude: np.ndarray | None = None) -> np.ndarray:
@@ -99,6 +121,7 @@ class Dataset:
         self.split_lock = threading.RLock()  # hold to change the split, or to read it across several calls
         self._lattice_cache: dict[str, spatial_plot.Lattice] = {}
         self._binning_cache: dict[tuple[str, float], hexbin.HexBinning] = {}
+        self._binning_lock = threading.RLock()  # binnings are slow and big: never two at once
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
         self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
@@ -179,8 +202,12 @@ class Dataset:
                 col = self.adata.obs[colname]
                 values = col.cat.categories if hasattr(col, "cat") else sorted(col.dropna().unique())
                 sample_ids = [str(v) for v in values]
-                codes = col.astype(str).to_numpy()
-                indices = {sid: np.where(codes == sid)[0] for sid in sample_ids}
+                # Grouping codes rather than comparing every spot's label with every sample's.
+                codes = col.cat.codes.to_numpy() if hasattr(col, "cat") else pd.Categorical(col, categories=values).codes
+                by_sample = np.argsort(codes, kind="stable")  # stable: each sample's spots stay in order
+                ends = np.cumsum(np.bincount(codes[codes >= 0], minlength=len(values)))
+                groups = np.split(by_sample[len(codes) - ends[-1]:] if len(ends) else by_sample[:0], ends[:-1])
+                indices = dict(zip(sample_ids, groups))
             self._lattice_cache = {}
             self._binning_cache = {}
             self.sample_col, self.sample_ids, self._sample_indices = colname, sample_ids, indices
@@ -219,23 +246,30 @@ class Dataset:
         """Hexagonal bins `width_factor` cell spacings wide over one sample's cells
         (shared by the Spatial view and hexagon-level Leiden clustering)."""
         key = (sample_id, width_factor)
-        if key in self._binning_cache:
-            self._binning_cache[key] = self._binning_cache.pop(key)  # most recently used last
-        else:
-            widths = list(dict.fromkeys(w for _, w in self._binning_cache))  # least recent first
-            if width_factor not in widths and len(widths) >= _BINNING_WIDTHS_KEPT:
-                for old in [k for k in self._binning_cache if k[1] == widths[0]]:
-                    del self._binning_cache[old]
-            width = width_factor * self.sample_lattice(sample_id).spacing
-            self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
-        return self._binning_cache[key]
+        with self._binning_lock:
+            if key in self._binning_cache:
+                self._binning_cache[key] = self._binning_cache.pop(key)  # most recently used last
+            else:
+                widths = list(dict.fromkeys(w for _, w in self._binning_cache))  # least recent first
+                if width_factor not in widths and len(widths) >= _BINNING_WIDTHS_KEPT:
+                    for old in [k for k in self._binning_cache if k[1] == widths[0]]:
+                        del self._binning_cache[old]
+                width = width_factor * self.sample_lattice(sample_id).spacing
+                self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
+            return self._binning_cache[key]
 
-    def cell_totals(self) -> np.ndarray | None:
-        """Each cell's total of self.counts (None without kept counts)."""
-        if self.counts is None:
+    def has_hex_binning(self, sample_id: str, width_factor: float) -> bool:
+        """Whether hex_binning would answer right away."""
+        return (sample_id, width_factor) in self._binning_cache
+
+    def cell_totals(self, counts=None) -> np.ndarray | None:
+        """Each cell's total of self.counts - or, while the app hasn't kept any yet, of
+        `counts`, the matrix they will be kept from (None if neither)."""
+        counts = self.counts if self.counts is not None else counts
+        if counts is None:
             return None
         if self._cell_totals is None:
-            self._cell_totals = np.asarray(self.counts.sum(axis=1)).ravel()
+            self._cell_totals = np.asarray(counts.sum(axis=1)).ravel()
         return self._cell_totals
 
     def kept_bins(self, idx: np.ndarray, binning, hex_filter: hexbin.HexFilter | None = None) -> np.ndarray:

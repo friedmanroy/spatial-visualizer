@@ -41,7 +41,7 @@ class HexFilterControls:
         self.info = pn.pane.HTML("", styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5))
         # Called with the new hexbin.HexFilter whenever the choice changes.
         self.listeners: list = []
-        self._target = None  # (dataset, sample, width factor, count matrix or None) described
+        self._target = None  # (dataset, sample, width factor, hexagons' total counts or None) described
         keep_filled(self.min_coverage, self.min_counts, self.min_gene_detection)
         for w in (self.normalize, self.min_coverage, self.min_counts, self.min_gene_detection):
             w.param.watch(self._notify, "value")
@@ -65,18 +65,21 @@ class HexFilterControls:
             listener(value)
         self._update_info()
 
-    def show(self, dataset, sample: str, width_factor: float, counts=None):
+    def show(self, dataset, sample: str, width_factor: float, cell_totals: np.ndarray | None = None):
         """Describes what the filter does to `sample`'s hexagons `width_factor` cell spacings
-        wide. `counts` is the matrix to sum (dataset.counts, or .X before the app normalizes
-        it; None if there are no counts, when only the spots per hexagon can be tested)."""
-        self._target = (dataset, sample, width_factor, counts)
-        self.min_counts.visible = self.normalize.visible = self.normalize_hint.visible = counts is not None
+        wide. `cell_totals` is each cell's total count (Dataset.cell_totals; None if there are
+        no counts, when only the spots per hexagon can be tested)."""
+        totals = None
+        if cell_totals is not None:  # kept, as changing the filter redraws this on the event loop
+            totals = dataset.hex_binning(sample, width_factor).sum(cell_totals[dataset.sample_indices(sample)])
+        self._target = (dataset, sample, width_factor, totals)
+        self.min_counts.visible = self.normalize.visible = self.normalize_hint.visible = totals is not None
         self._update_info()
 
     def _update_info(self):
         if self._target is None:
             return
-        dataset, sample, width_factor, counts = self._target
+        dataset, sample, width_factor, totals = self._target
         binning = dataset.hex_binning(sample, width_factor)
         if binning.n_bins == 0:
             self.histogram.object = self.info.object = ""
@@ -84,13 +87,11 @@ class HexFilterControls:
         hex_filter = self.value
         few_spots = ~hex_filter.keep(binning)
         name = f" of {sample}" if len(dataset.sample_ids) > 1 else ""
-        if counts is None:
+        if totals is None:
             self.histogram.object = ""
             self.info.object = (f"Leaves out <b>{few_spots.sum():,}</b> of {binning.n_bins:,} hexagons{name} "
                                 f"with too few spots.")
             return
-        cell_totals = np.asarray(counts.sum(axis=1)).ravel()
-        totals = binning.sum(cell_totals[dataset.sample_indices(sample)])
         few_counts = ~few_spots & (totals < hex_filter.min_counts)
         self.histogram.object = render_totals_histogram(totals, hex_filter.min_counts)
         self.info.object = (

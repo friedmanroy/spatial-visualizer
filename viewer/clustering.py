@@ -27,6 +27,8 @@ import scipy.sparse as sp
 DEFAULT_N_PCS = 10
 DEFAULT_N_NEIGHBORS = 15
 DEFAULT_LEIDEN_RESOLUTION = 1.0
+#: sparse hexagon profiles are summed this many hexagons at a time
+_PROFILE_CHUNK = 2_000
 #: what clustering / PCA / UMAP run on (labels of the choice shown in the UI)
 HEXAGONS, CELLS = "Hexagons", "Individual cells"
 #: gene-name prefixes (case-insensitive) of mitochondrial and ribosomal-protein genes
@@ -220,6 +222,24 @@ def run_leiden(dataset, resolution: float, n_pcs: int = DEFAULT_N_PCS,
     return col
 
 
+def _stack_csr(parts: list[sp.csr_matrix], n_cols: int) -> sp.csr_matrix:
+    """`parts` as one CSR matrix, emptying the list as it goes: summed hexagons are nearly
+    dense, and sp.vstack would hold every part and the whole result at once."""
+    nnz = sum(p.nnz for p in parts)
+    data = np.empty(nnz, dtype=np.float32)
+    indices = np.empty(nnz, dtype=np.int32)
+    indptr = np.zeros(sum(p.shape[0] for p in parts) + 1, dtype=np.int64)
+    parts.reverse()
+    row = at = 0
+    while parts:
+        p = parts.pop()
+        data[at:at + p.nnz], indices[at:at + p.nnz] = p.data, p.indices
+        indptr[row + 1:row + 1 + p.shape[0]] = at + p.indptr[1:]
+        row += p.shape[0]
+        at += p.nnz
+    return sp.csr_matrix((data, indices, indptr), shape=(row, n_cols), copy=False)
+
+
 def hex_profiles(dataset, width_factor: float, genes: list[str] | None = None, hex_filter=None):
     """(AnnData with one row per hexagonal bin - `width_factor` cell spacings wide - that
     `hex_filter` (by default dataset.hex_filter) analyses, of every sample; [(cell indices,
@@ -235,21 +255,29 @@ def hex_profiles(dataset, width_factor: float, genes: list[str] | None = None, h
     hex_filter = hex_filter or dataset.hex_filter
     summed = dataset.counts is not None
     X = dataset.counts if summed else adata.X
+    if sp.issparse(X) and X.format != "csr":  # once, not for every chunk below
+        X = sp.csr_matrix(X)
     profiles, binnings, samples, counts, centers = [], [], [], [], []
     for sid in dataset.sample_ids:
         idx, binning = dataset.kept_binning(sid, width_factor, hex_filter)
         if binning.n_bins == 0:
             continue
-        weights = sp.diags(binning.counts.astype(np.float32)) @ binning.mean_matrix if summed else binning.mean_matrix
-        profile = weights @ X[idx]
-        profiles.append(sp.csr_matrix(profile, dtype=np.float32) if sp.issparse(profile) else np.asarray(profile))
+        weights = sp.csr_matrix(sp.diags(binning.counts.astype(np.float32)) @ binning.mean_matrix if summed
+                                else binning.mean_matrix)
+        # Columns over all of X's cells: X[idx] would copy this sample's whole part of the matrix.
+        weights = sp.csr_matrix((weights.data, idx[weights.indices], weights.indptr), shape=(binning.n_bins, X.shape[0]))
+        if sp.issparse(X):
+            profiles += [sp.csr_matrix(weights[start:start + _PROFILE_CHUNK] @ X, dtype=np.float32)
+                         for start in range(0, binning.n_bins, _PROFILE_CHUNK)]
+        else:
+            profiles.append(np.asarray(weights @ X))
         binnings.append((idx, binning))
         samples += [sid] * binning.n_bins
         counts.append(binning.counts)
         centers.append(binning.centers)
     if not profiles:
         raise ValueError("The hexagon filter leaves no hexagons - lower its minimum spots or counts.")
-    stacked = sp.vstack(profiles, format="csr") if sp.issparse(profiles[0]) else np.vstack(profiles)
+    stacked = _stack_csr(profiles, X.shape[1]) if sp.issparse(profiles[0]) else np.vstack(profiles)
     bins = ad.AnnData(stacked)
     bins.var_names = adata.var_names
     if summed:

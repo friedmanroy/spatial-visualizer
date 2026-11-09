@@ -140,7 +140,7 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
 
     def update_hex_filter_info(*events):
         if spatial is not None:
-            state.hex_filter.show(spatial, spatial.largest_sample(), hex_factor(), spatial.counts)
+            state.hex_filter.show(spatial, spatial.largest_sample(), hex_factor(), spatial.cell_totals())
 
     hex_width.param.watch(update_hex_filter_info, "value")
     hex_filter_box = pn.Column(state.hex_filter.layout, sizing_mode="stretch_width", margin=0)

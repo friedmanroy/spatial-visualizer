@@ -558,7 +558,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def update_hex_filter_info(*events):
         if leiden_unit.value == clustering.HEXAGONS:
-            state.hex_filter.show(dataset, sample_select.value, leiden_factor(), dataset.counts)
+            state.hex_filter.show(dataset, sample_select.value, leiden_factor(), dataset.cell_totals())
 
     update_leiden_target()
     update_bin_width_note()

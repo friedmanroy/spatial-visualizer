@@ -9,7 +9,6 @@ import sys
 import traceback
 
 import panel as pn
-import scanpy as sc
 
 from . import clustering, hexbin
 from . import pathways as pathways_mod
@@ -17,7 +16,7 @@ from .cache import ColorCache
 from .clustering import CELLS, HEXAGONS
 from .color_controls import HINT_STYLE, keep_filled
 from .file_picker import build_path_picker, remember_folder_of
-from .state import Dataset
+from .state import Dataset, read_viewer_h5ad
 
 # Shipped inside the package so it's found however the app was installed/launched.
 # First entry of the sample/FOV dropdown: don't split, treat the whole file as one sample.
@@ -101,10 +100,19 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             return
         largest = ds.largest_sample()
         factor = leiden_factor() or ds.default_hex_factor()
-        await asyncio.to_thread(ds.hex_binning, largest, factor)  # the slow part, the first time
         # .X still holds the counts it will be normalized from, when opening.
-        counts = ds.counts if ds.counts is not None else ds.adata.X if normalize_checkbox.value else None
-        state.hex_filter.show(ds, largest, factor, counts)
+        counts = ds.adata.X if normalize_checkbox.value else None
+
+        def prepare():
+            ds.hex_binning(largest, factor)  # the slow part, the first time
+            return ds.cell_totals(counts)
+
+        if ds.has_hex_binning(largest, factor):
+            totals = await asyncio.to_thread(prepare)
+        else:
+            async with busy.show("Sorting the spots into hexagons...", f"{len(ds.sample_indices(largest)):,} spots"):
+                totals = await asyncio.to_thread(prepare)
+        state.hex_filter.show(ds, largest, factor, totals)
 
     async def on_leiden_toggle(event):
         await update_hex_filter_info()
@@ -195,7 +203,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     async def _load(path: str):
         try:
             busy.step("Reading the .h5ad file")
-            adata = await asyncio.to_thread(sc.read_h5ad, path)
+            adata = await asyncio.to_thread(read_viewer_h5ad, path)
             if "spatial" not in adata.obsm:
                 status.object = (
                     "**This file has no `adata.obsm['spatial']`** - it doesn't look like "

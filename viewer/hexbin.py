@@ -170,7 +170,7 @@ def width_note(extent: tuple[float, float], spacing: float, factor: float | None
 def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:
     """Assigns every cell to the pointy-top hexagon (flat-to-flat `width`) containing it."""
     size = width / np.sqrt(3)  # circumradius
-    x, y = coords[:, 0].astype(float), coords[:, 1].astype(float)
+    x, y = coords[:, 0].astype(float, copy=False), coords[:, 1].astype(float, copy=False)
     # Fractional axial coordinates, then cube rounding to the nearest hexagon.
     q = (np.sqrt(3) / 3 * x - y / 3) / size
     r = (2 / 3 * y) / size
@@ -181,17 +181,23 @@ def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:
     fix_r = ~fix_q & (dr > ds)
     rq[fix_q] = -rr[fix_q] - rs[fix_q]
     rr[fix_r] = -rq[fix_r] - rs[fix_r]
-    axial = np.stack([rq, rr], axis=1).astype(np.int64)
+    del x, y, q, r, s, rs, dq, dr, ds, fix_q, fix_r  # each as big as the coordinates: not kept for the sort
+    rq, rr = rq.astype(np.int64), rr.astype(np.int64)
 
-    unique, cell_bin = np.unique(axial, axis=0, return_inverse=True)
+    # One sortable number per hexagon, ordered like (rq, rr): sorting pairs is far slower.
+    q_min, r_min = rq.min(initial=0), rr.min(initial=0)
+    n_r = rr.max(initial=0) - r_min + 1
+    keys, cell_bin = np.unique((rq - q_min) * n_r + (rr - r_min), return_inverse=True)
+    del rq, rr
     cell_bin = cell_bin.ravel()
-    counts = np.bincount(cell_bin, minlength=len(unique))
+    counts = np.bincount(cell_bin, minlength=len(keys))
+    unique_q, unique_r = keys // n_r + q_min, keys % n_r + r_min
     centers = np.stack([
-        size * np.sqrt(3) * (unique[:, 0] + unique[:, 1] / 2),
-        size * 1.5 * unique[:, 1],
+        size * np.sqrt(3) * (unique_q + unique_r / 2),
+        size * 1.5 * unique_r,
     ], axis=1)
     mean_matrix = sp.csr_matrix(
         (1.0 / counts[cell_bin], (cell_bin, np.arange(len(cell_bin)))),
-        shape=(len(unique), len(cell_bin)),
+        shape=(len(keys), len(cell_bin)),
     )
     return HexBinning(centers, cell_bin, counts, width, mean_matrix)
