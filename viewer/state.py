@@ -5,6 +5,8 @@ no column name is ever assumed to exist - everything is looked up through `field
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import scanpy as sc
 import scipy.sparse as sp
@@ -94,6 +96,7 @@ class Dataset:
         self.sample_col: str | None = None
         self.sample_ids: list[str] = []
         self._sample_indices: dict[str, np.ndarray] = {}
+        self.split_lock = threading.RLock()  # hold to change the split, or to read it across several calls
         self._lattice_cache: dict[str, spatial_plot.Lattice] = {}
         self._binning_cache: dict[tuple[str, float], hexbin.HexBinning] = {}
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
@@ -165,22 +168,22 @@ class Dataset:
 
     # -- sample / FOV splitting -----------------------------------------------
     def set_sample_column(self, colname: str | None):
-        if self.sample_ids and colname == self.sample_col:
-            return  # already split this way: keep the measured lattices and binnings
-        self.sample_col = colname
-        self._sample_indices = {}
-        self._lattice_cache = {}
-        self._binning_cache = {}
-        if colname is None:
-            self.sample_ids = ["all cells"]
-            self._sample_indices["all cells"] = np.arange(self.adata.n_obs)
-            return
-        col = self.adata.obs[colname]
-        values = col.cat.categories if hasattr(col, "cat") else sorted(col.dropna().unique())
-        self.sample_ids = [str(v) for v in values]
-        codes = col.astype(str).to_numpy()
-        for sid in self.sample_ids:
-            self._sample_indices[sid] = np.where(codes == sid)[0]
+        with self.split_lock:
+            if self.sample_ids and colname == self.sample_col:
+                return  # already split this way: keep the measured lattices and binnings
+            # Built aside and swapped in together: other threads may be reading the split.
+            if colname is None:
+                sample_ids = ["all cells"]
+                indices = {"all cells": np.arange(self.adata.n_obs)}
+            else:
+                col = self.adata.obs[colname]
+                values = col.cat.categories if hasattr(col, "cat") else sorted(col.dropna().unique())
+                sample_ids = [str(v) for v in values]
+                codes = col.astype(str).to_numpy()
+                indices = {sid: np.where(codes == sid)[0] for sid in sample_ids}
+            self._lattice_cache = {}
+            self._binning_cache = {}
+            self.sample_col, self.sample_ids, self._sample_indices = colname, sample_ids, indices
 
     def sample_indices(self, sample_id: str) -> np.ndarray:
         return self._sample_indices[sample_id]

@@ -144,12 +144,15 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
-        col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
 
         def measure():
-            ds.set_sample_column(col)
-            largest = ds.largest_sample()
-            return ds.sample_extent(largest), ds.sample_lattice(largest).spacing
+            # Calls can overlap (loading also restores the sample column, which lands here
+            # too): one at a time, each with the column chosen by the time its turn comes.
+            with ds.split_lock:
+                col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
+                ds.set_sample_column(col)
+                largest = ds.largest_sample()
+                return ds.sample_extent(largest), ds.sample_lattice(largest).spacing
 
         holder["extent"], holder["spacing"] = await asyncio.to_thread(measure)
         holder["width_subject"] = "The largest sample" if len(ds.sample_ids) > 1 else "The sample"
