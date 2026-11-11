@@ -26,6 +26,9 @@ import panel as pn
 
 from . import cache
 
+#: what the data file pickers offer: AnnData, or a Seurat object saved with saveRDS
+DATA_FILE_PATTERN = "*.h5ad *.rds"
+
 # Fallback for non-macOS: plain Tk dialog, in its own process so it owns its main thread.
 _TK_SCRIPT = r"""
 import sys
@@ -100,7 +103,8 @@ def _pick_file_blocking(file_pattern: str, start_dir: str | None) -> str | None:
     if sys.platform == "darwin":
         cmd = ["osascript", "-e", _OSASCRIPT_IN_DIR, start_dir] if start_dir else ["osascript", "-e", _OSASCRIPT]
     else:
-        label = file_pattern.lstrip("*.").upper() or "Data"
+        # Tk takes several patterns space-separated: "*.h5ad *.rds" -> "H5AD / RDS files".
+        label = " / ".join(p.lstrip("*.").upper() for p in file_pattern.split()) or "Data"
         cmd = [sys.executable, "-c", _TK_SCRIPT, file_pattern, label, start_dir or ""]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

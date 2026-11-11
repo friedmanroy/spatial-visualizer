@@ -27,7 +27,8 @@ from bokeh.plotting import figure
 from . import clustering, hexbin, hover, spatial_plot
 from .color_controls import HINT_STYLE, ColorControls, keep_filled, section_label
 from .colors import GRAY_RGBA
-from .file_picker import build_path_picker, remember_folder_of
+from .file_picker import DATA_FILE_PATTERN, build_path_picker, remember_folder_of
+from .seurat import is_rds, read_seurat_rds
 from .state import Dataset
 
 DEFAULT_N_PCS = clustering.DEFAULT_N_PCS
@@ -101,7 +102,8 @@ def _hexagon_dataset(spatial: Dataset, width_factor: float, report=clustering._n
 
 def build_embedding_page(state) -> pn.viewable.Viewable:
     busy = state.busy
-    path_input, browse_btn, _ = build_path_picker("scRNA / snRNA .h5ad path", busy=busy)
+    path_input, browse_btn, _ = build_path_picker("scRNA / snRNA .h5ad or Seurat .rds path", busy=busy,
+                                                  file_pattern=DATA_FILE_PATTERN)
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
 
     n_pcs_input = pn.widgets.IntInput(name="Number of PCs", value=DEFAULT_N_PCS, start=2, end=50, width=140)
@@ -322,8 +324,12 @@ def build_embedding_page(state) -> pn.viewable.Viewable:
             return
         try:
             async with busy.show("Loading file...", path):
-                busy.step("Reading the .h5ad file")
-                adata = await asyncio.to_thread(sc.read_h5ad, path)
+                if is_rds(path):
+                    busy.step("Reading the Seurat .rds file")
+                    adata = await asyncio.to_thread(read_seurat_rds, path)
+                else:
+                    busy.step("Reading the .h5ad file")
+                    adata = await asyncio.to_thread(sc.read_h5ad, path)
                 if "spatial" not in adata.obsm:
                     busy.step(f"Normalizing {adata.n_obs:,} cells (normalize_total + log1p, if the data is raw counts)")
                     await asyncio.to_thread(clustering.normalize_if_raw, adata)

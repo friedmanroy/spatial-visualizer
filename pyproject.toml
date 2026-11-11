@@ -25,6 +25,7 @@ dependencies = [
     "igraph==1.0.0",  # for Leiden clustering
     "decoupler==2.3.1",  # for marker-based cell typing of Leiden clusters
     "openpyxl==3.1.5",  # for importing marker databases from .xlsx (CellMarker 2.0)
+    "rdata==1.1.0",  # for reading Seurat objects saved as .rds, without R
 ]
 
 [project.scripts]

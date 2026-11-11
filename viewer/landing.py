@@ -15,8 +15,9 @@ from . import pathways as pathways_mod
 from .cache import ColorCache
 from .clustering import CELLS, HEXAGONS
 from .color_controls import HINT_STYLE, keep_filled
-from .file_picker import build_path_picker, remember_folder_of
-from .state import Dataset, read_viewer_h5ad
+from .file_picker import DATA_FILE_PATTERN, build_path_picker, remember_folder_of
+from .seurat import is_rds
+from .state import Dataset, read_viewer_file
 
 # Shipped inside the package so it's found however the app was installed/launched.
 # First entry of the sample/FOV dropdown: don't split, treat the whole file as one sample.
@@ -27,7 +28,8 @@ DEFAULT_PATHWAYS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 def build_landing(state, on_ready) -> pn.viewable.Viewable:
     busy = state.busy
-    path_input, _, path_picker = build_path_picker("Spatial .h5ad path", busy=busy)
+    path_input, _, path_picker = build_path_picker("Spatial .h5ad or Seurat .rds path", busy=busy,
+                                                   file_pattern=DATA_FILE_PATTERN)
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
     status = pn.pane.Markdown("")
 
@@ -202,10 +204,13 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
 
     async def _load(path: str):
         try:
-            busy.step("Reading the .h5ad file")
-            adata = await asyncio.to_thread(read_viewer_h5ad, path)
+            busy.step("Reading the Seurat .rds file" if is_rds(path) else "Reading the .h5ad file")
+            adata = await asyncio.to_thread(read_viewer_file, path)
             if "spatial" not in adata.obsm:
                 status.object = (
+                    "**No spatial coordinates found in this Seurat object** - none of its images has "
+                    "any, and meta.data has no x / y columns. Pick a different file."
+                    if is_rds(path) else
                     "**This file has no `adata.obsm['spatial']`** - it doesn't look like "
                     "spatial data. Pick a different file."
                 )
@@ -338,7 +343,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     return pn.Column(
         "# Spatial Transcriptomics Visualizer",
         "Enter the path to an AnnData `.h5ad` file with spatial coordinates in "
-        "`adata.obsm['spatial']`. No other obs columns are assumed - you'll pick what to "
+        "`adata.obsm['spatial']`, or a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`. "
+        "No other obs columns are assumed - you'll pick what to "
         "use for samples/fields-of-view and coloring after loading.",
         path_picker,
         load_btn,

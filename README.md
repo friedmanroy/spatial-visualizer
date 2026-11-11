@@ -193,7 +193,14 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
 (Or double-click a `Start Spatial Visualizer` launcher, see above.) This opens a browser tab with a landing page. From there:
 
 1. Enter (or browse to) the path of a spatial `.h5ad` file - it must have coordinates in
-   `adata.obsm['spatial']`.
+   `adata.obsm['spatial']` - or of a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`.
+   R isn't needed to read it. The app uses the `Spatial` assay's raw counts if there are any
+   (else the active assay's, else its normalized `data`), and `meta.data` becomes the obs
+   columns. Coordinates come from the object's images (Visium, Slide-seq, Xenium / FOV), or
+   else from x / y columns in `meta.data`. With several images, a new `image` column tells
+   them apart, so you can pick it as the sample column. Matrices Seurat v5 keeps on disk
+   (BPCells) can't be read from the `.rds` alone; convert them to a regular sparse matrix in R
+   before saving.
 2. Once loaded, pick which obs column separates samples/fields-of-view (leave it as **None**
    if the file is a single sample; the choice is remembered for next time), choose whether to
    normalize the expression (see **Normalization** above), optionally point at a `pathways.json` file (defaults to

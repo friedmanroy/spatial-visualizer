@@ -18,6 +18,7 @@ from anndata.io import read_elem
 from . import clustering
 from . import fields as fields_mod
 from . import hexbin
+from . import seurat
 from . import spatial_plot
 
 #: how many recent top-genes results Dataset.top_genes keeps
@@ -31,6 +32,11 @@ _TOP_K_BUDGET = 16_000_000
 _HVG_SAMPLE = 100_000
 #: the obsm entries the viewer reads; loading leaves the others out of memory
 _OBSM_USED = ("spatial", "X_pca", "X_umap")
+
+
+def read_viewer_file(path: str):
+    """The AnnData the viewer works on, from an .h5ad file or a Seurat object saved as .rds."""
+    return seurat.read_seurat_rds(path) if seurat.is_rds(path) else read_viewer_h5ad(path)
 
 
 def read_viewer_h5ad(path: str):
