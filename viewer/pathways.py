@@ -59,27 +59,44 @@ def remove_custom_pathway(name: str):
         _write_custom_pathways(custom)
 
 
-def score_pathway(dataset, pathway_name: str, pathways: dict) -> np.ndarray | None:
-    """Returns a per-cell score array (cached on `dataset`), or None if too few genes match."""
-    cache = dataset.pathway_score_cache
-    if pathway_name in cache:
-        return cache[pathway_name]
+def pathway_genes(dataset, pathway_name: str, pathways: dict) -> tuple[str, ...] | None:
+    """The pathway's genes as spelled in this dataset, or None if fewer than 2 match."""
     info = pathways.get(pathway_name)
     if info is None:
         return None
     # Match case-insensitively so mouse-cased pathway gene lists (Col1a1) still
     # resolve against a human-cased dataset (COL1A1), or vice versa.
     matched = (dataset.match_gene(g) for g in info.get("genes", []))
-    genes = sorted({g for g in matched if g is not None})
-    if len(genes) < 2:
+    genes = tuple(sorted({g for g in matched if g is not None}))
+    return genes if len(genes) >= 2 else None
+
+
+def score_pathway(dataset, pathway_name: str, pathways: dict) -> np.ndarray | None:
+    """Returns a per-cell score array (cached on `dataset`), or None if too few genes match."""
+    cache = dataset.pathway_score_cache
+    if pathway_name in cache:
+        return cache[pathway_name]
+    if pathway_name not in pathways:
+        return None
+    genes = pathway_genes(dataset, pathway_name, pathways)
+    if genes is None:
         cache[pathway_name] = None
         return None
     # Log-normalized expression, never adata.raw (score_genes' default when there is
     # one): the genes were matched against .var_names, and .raw often holds raw counts.
     adata = dataset.expression()
     score_col = f"_pathway_score_{pathway_name}"
-    sc.tl.score_genes(adata, gene_list=genes, score_name=score_col, random_state=0, use_raw=False)
+    sc.tl.score_genes(adata, gene_list=list(genes), score_name=score_col, random_state=0, use_raw=False)
     score = np.asarray(adata.obs[score_col].to_numpy(), dtype=np.float64)
     del adata.obs[score_col]
     cache[pathway_name] = score
     return score
+
+
+def score_pathway_bins(dataset, pathway_name: str, pathways: dict, idx: np.ndarray, binning,
+                       mask: np.ndarray | None = None) -> np.ndarray | None:
+    """Per-bin scores of `binning` (over the sample's cells `idx`; only those in `mask`, if
+    given), each from the bin's pooled profile - see Dataset.bin_gene_set_scores - or None
+    if too few genes match."""
+    genes = pathway_genes(dataset, pathway_name, pathways)
+    return None if genes is None else dataset.bin_gene_set_scores(genes, idx, binning, mask)

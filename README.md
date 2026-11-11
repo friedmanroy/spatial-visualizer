@@ -22,8 +22,9 @@ which obs column separates samples/fields-of-view, and color everything either b
   (by default about 50,000 hexagons over the sample's bounding rectangle - adjustable as
   **Hexagon edge length**, in the coordinates' units, under **Display settings**): each bin shows
   a gene's expression from its cells' summed counts, log1p'd per bin (like the hexagons
-  clustering uses; the cells' mean if the data wasn't normalized by the app, and for pathway
-  scores), or their most common selected category. Zoom in until at most
+  clustering uses; the cells' mean if the data wasn't normalized by the app), or their most
+  common selected category. Pathway scores are computed on each hexagon's pooled profile when
+  the load page pooled the spots into hexagons, else they're the mean of the cells' scores. Zoom in until at most
   200,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
   by default), colored per cell by expression; clusters and cell types computed on the
   hexagons color each cell like its hexagon.

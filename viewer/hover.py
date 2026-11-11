@@ -18,7 +18,7 @@ N_TOP_GENES = 5
 #: columns holding those genes, as codes into the tooltip meta's `top` names (-1: none)
 TOP_COLUMNS = tuple(f"hv_t{j}" for j in range(N_TOP_GENES))
 #: hover columns in the plot's ColumnDataSource, all one value per drawn cell / bin
-COLUMNS = ("hv_code", "hv_conf", "hv_share", "hv_n", "hv_r", "hv_g", "hv_b", *TOP_COLUMNS)
+COLUMNS = ("hv_code", "hv_conf", "hv_share", "hv_mean", "hv_n", "hv_r", "hv_g", "hv_b", *TOP_COLUMNS)
 
 _JS = """
 const TOP_COLUMNS = __TOP_COLUMNS__;
@@ -31,7 +31,8 @@ if (m.binned) lines.push(d.hv_n[i] + ' cells in this bin');
 if (m.kind === 'field') {
     const c = d.hv_code[i];
     let text = m.field + ': ' + (c >= 0 ? m.labels[c] : (m.binned ? 'none selected' : 'missing'));
-    if (m.binned && c >= 0) text += '  (' + pct(d.hv_share[i]) + ' of its cells)';
+    if (m.continuous && c >= 0) text = m.field + ': ' + Number(d.hv_mean[i].toPrecision(4)) + ' (mean of its cells)';
+    else if (m.binned && c >= 0) text += '  (' + pct(d.hv_share[i]) + ' of its cells)';
     lines.push(text);
     const conf = d.hv_conf[i];
     if (m.has_conf && !isNaN(conf)) lines.push('Confidence in this cell type: ' + pct(conf) + (m.binned ? ' (mean)' : ''));
@@ -56,7 +57,7 @@ return lines.join('\\n');
 
 def empty_columns(n: int) -> dict[str, np.ndarray]:
     nan = np.full(n, np.nan, dtype=np.float32)
-    return {"hv_code": np.full(n, -1, dtype=np.int32), "hv_conf": nan, "hv_share": nan,
+    return {"hv_code": np.full(n, -1, dtype=np.int32), "hv_conf": nan, "hv_share": nan, "hv_mean": nan,
             "hv_n": np.ones(n, dtype=np.int32), "hv_r": nan, "hv_g": nan, "hv_b": nan,
             **{col: np.full(n, -1, dtype=np.int32) for col in TOP_COLUMNS}}
 

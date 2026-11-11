@@ -304,6 +304,35 @@ class ColorControls:
         has_value = np.isfinite(values[idx])
         return binning.mean(values[idx], has_value if mask is None else mask & has_value)
 
+    @staticmethod
+    def _bin_field_means(dataset, spec, idx, binning, active) -> tuple[np.ndarray, np.ndarray]:
+        """(each bin's value-range code, its mean) for a continuous field: the mean over the
+        bin's cells (of the sample's cells `idx`) with a value in one of the `active` ranges,
+        placed in the field's ranges. Code -1 and NaN for bins without any."""
+        values = pd.to_numeric(dataset.adata.obs[spec.name], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        active_codes = np.array([c in active for c in spec.categories] + [False])
+        selected = active_codes[spec.codes[idx]] & np.isfinite(values[idx])
+        means = binning.mean(values[idx], selected)
+        codes = np.minimum(np.searchsorted(spec.bin_edges, means), len(spec.categories) - 1)
+        return np.where(np.isfinite(means), codes, -1).astype(np.int32), means
+
+    @staticmethod
+    def _pathway_values(dataset, name: str, pathways, binning):
+        """What a pathway channel needs before binning: per-cell scores - or, for hexagons
+        scored from their pooled counts (Dataset.pools_hexagons), just the pathway's genes,
+        since the hexagons are scored themselves. None if too few genes match."""
+        if binning is not None and dataset.pools_hexagons:
+            return pathways_mod.pathway_genes(dataset, name, pathways)
+        return pathways_mod.score_pathway(dataset, name, pathways)
+
+    @staticmethod
+    def _bin_pathway_values(dataset, name: str, values, idx, binning, mask, pathways):
+        """Per-bin values of a pathway channel (see _pathway_values): each hexagon's score
+        on its pooled profile, or its cells' mean score."""
+        if isinstance(values, tuple):
+            return pathways_mod.score_pathway_bins(dataset, name, pathways, idx, binning, mask)
+        return binning.mean(values[idx], mask)
+
     def refresh_field_options(self, changed_field: str, select: bool = False):
         """Re-reads the field list after an obs column was added/recomputed (e.g. Leiden),
         optionally switching to Field mode and coloring by that column."""
@@ -569,6 +598,10 @@ class ColorControls:
             active = self._active_labels()
             if binning is None:
                 return colors_mod.field_fill_colors(spec, active, None if idx is None else spec.codes[idx])
+            if spec.kind == "binned_continuous":
+                codes, _ = self._bin_field_means(dataset, spec, idx, binning, active)
+                # The mean can fall in a range that isn't selected: its cells were.
+                return colors_mod.field_fill_colors(spec, set(spec.categories), codes)
             active_codes = np.array([c in active for c in spec.categories] + [False])
             codes = spec.codes[idx]
             codes = np.where(active_codes[codes], codes, -1)  # code -1 hits the trailing False
@@ -588,8 +621,8 @@ class ColorControls:
                 values = self._channel_values(dataset, gene) if gene else None
                 channels[label] = (values, False)
             else:
-                pname = w["pathway"].value
-                values = pathways_mod.score_pathway(dataset, pname, pathways) if pname else None
+                pname = genes[label] = w["pathway"].value
+                values = self._pathway_values(dataset, pname, pathways, binning) if pname else None
                 channels[label] = (values, True)
             channel_values[label] = values
         self._update_pathway_info(pathways, is_gene)
@@ -598,7 +631,8 @@ class ColorControls:
             channels = {
                 label: (None if values is None
                         else self._bin_channel_values(dataset, genes[label], values, idx, binning, cell_mask) if is_gene
-                        else binning.mean(values[idx], cell_mask), bipolar)
+                        else self._bin_pathway_values(dataset, genes[label], values, idx, binning, cell_mask,
+                                                      pathways), bipolar)
                 for label, (values, bipolar) in channels.items()
             }
             # Bins without any cell of a selected category have no mean (NaN).
@@ -610,7 +644,7 @@ class ColorControls:
                 shown = kept if shown is None else shown & kept
                 channels = {label: (None if values is None else np.where(kept, values, np.nan), bipolar)
                             for label, (values, bipolar) in channels.items()}
-            self._update_bin_histograms(channel_values, channels, genes if is_gene else None, binning, mask)
+            self._update_bin_histograms(channel_values, channels, genes, is_gene, binning, mask)
         else:
             self._update_histograms(channel_values, mask)
             shown = mask
@@ -648,7 +682,11 @@ class ColorControls:
             conf_col = f"{field}_confidence"
             has_conf = conf_col in dataset.adata.obs.columns
             conf = take(dataset.adata.obs[conf_col].to_numpy(dtype=np.float32)) if has_conf else None
-            if binned:  # as drawn: the most common *selected* category of each bin
+            continuous = binned and spec.kind == "binned_continuous"
+            if continuous:  # as drawn: the mean over each bin's cells in the selected ranges
+                codes, means = self._bin_field_means(dataset, spec, idx, binning, self._active_labels())
+                cols["hv_mean"] = means.astype(np.float32)
+            elif binned:  # as drawn: the most common *selected* category of each bin
                 active = self._active_labels()
                 active_codes = np.array([c in active for c in spec.categories] + [False])
                 codes = np.where(active_codes[codes], codes, -1)
@@ -665,7 +703,7 @@ class ColorControls:
             if has_conf:
                 cols["hv_conf"] = np.asarray(conf, dtype=np.float32)
             meta = {"kind": "field", "field": field, "labels": list(spec.categories),
-                    "has_conf": has_conf, "binned": binned}
+                    "has_conf": has_conf, "binned": binned, "continuous": continuous}
             return cols, meta
         is_gene = self.expr_mode.value == "Gene"
         mask = self.category_filter_mask()
@@ -676,14 +714,15 @@ class ColorControls:
             values = None
             if name:
                 values = (self._channel_values(dataset, name) if is_gene
-                          else pathways_mod.score_pathway(dataset, name, pathways))
+                          else self._pathway_values(dataset, name, pathways, binning))
             if values is None:
                 continue
-            values = np.asarray(values, dtype=np.float32)
             if binned:
                 bin_mask = None if mask is None else take(mask)
                 values = (self._bin_channel_values(dataset, name, values, idx, binning, bin_mask) if is_gene
-                          else binning.mean(take(values), bin_mask))
+                          else self._bin_pathway_values(dataset, name, values, idx, binning, bin_mask, pathways))
+                if values is None:
+                    continue
             else:
                 values = take(np.where(mask, values, np.nan) if mask is not None else values)
             cols[f"hv_{label.lower()}"] = np.asarray(values, dtype=np.float32)
@@ -749,7 +788,7 @@ class ColorControls:
             else:
                 self._show_histogram(label, local_values, values, "distribution across all cells")
 
-    def _update_bin_histograms(self, channel_values, bin_channels, genes, binning, mask=None):
+    def _update_bin_histograms(self, channel_values, bin_channels, names, is_gene, binning, mask=None):
         """Histograms of the hexagons' values, as colored: this sample's drawn bins over
         every sample's bins of the same width (each made like the drawn ones)."""
         dataset = self.get_dataset()
@@ -770,17 +809,18 @@ class ColorControls:
                 self._show_histogram(label, local, None, f"distribution across {what}")
                 continue
             parts = [local]
-            name = genes[label] if genes is not None else self.channel_widgets[label]["pathway"].value
+            name = names[label]
             for sid in others:
-                key = (genes is not None, name, width, sid, mask_key, dataset.hex_filter)
+                key = (is_gene, name, width, sid, mask_key, dataset.hex_filter)
                 cached = self._bin_values_cache.get(key)
-                if cached is None or cached[0] is not values:  # e.g. a recomputed pathway score
+                # Stale after e.g. a recomputed pathway score, or an edited pathway's genes.
+                if cached is None or not (cached[0] is values or isinstance(values, tuple) and cached[0] == values):
                     idx = dataset.sample_indices(sid)
                     b = dataset.hex_binning(sid, width)
                     cell_mask = None if mask is None else mask[idx]
-                    result = (self._bin_channel_values(dataset, genes[label], values, idx, b, cell_mask)
-                              if genes is not None
-                              else b.mean(values[idx], cell_mask))
+                    result = (self._bin_channel_values(dataset, name, values, idx, b, cell_mask) if is_gene
+                              else self._bin_pathway_values(dataset, name, values, idx, b, cell_mask,
+                                                            self.get_pathways()))
                     result = np.where(dataset.kept_bins(idx, b), result, np.nan)
                     self._bin_values_cache.pop(key, None)
                     if len(self._bin_values_cache) >= _BIN_VALUES_CACHE_SIZE:

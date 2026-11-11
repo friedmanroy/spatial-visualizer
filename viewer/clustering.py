@@ -240,6 +240,18 @@ def _stack_csr(parts: list[sp.csr_matrix], n_cols: int) -> sp.csr_matrix:
     return sp.csr_matrix((data, indices, indptr), shape=(row, n_cols), copy=False)
 
 
+def pool_chunks(X, idx: np.ndarray, weights) -> list:
+    """`weights` (bins x the cells `idx`) @ X[idx] - e.g. each bin's summed counts - as a
+    list of row chunks (CSR if X is sparse), without copying X[idx]. X should be CSR."""
+    weights = sp.csr_matrix(weights)
+    # Columns over all of X's cells: X[idx] would copy this sample's whole part of the matrix.
+    weights = sp.csr_matrix((weights.data, idx[weights.indices], weights.indptr), shape=(weights.shape[0], X.shape[0]))
+    if sp.issparse(X):
+        return [sp.csr_matrix(weights[start:start + _PROFILE_CHUNK] @ X, dtype=np.float32)
+                for start in range(0, weights.shape[0], _PROFILE_CHUNK)]
+    return [np.asarray(weights @ X)]
+
+
 def hex_profiles(dataset, width_factor: float, genes: list[str] | None = None, hex_filter=None):
     """(AnnData with one row per hexagonal bin - `width_factor` cell spacings wide - that
     `hex_filter` (by default dataset.hex_filter) analyses, of every sample; [(cell indices,
@@ -262,15 +274,7 @@ def hex_profiles(dataset, width_factor: float, genes: list[str] | None = None, h
         idx, binning = dataset.kept_binning(sid, width_factor, hex_filter)
         if binning.n_bins == 0:
             continue
-        weights = sp.csr_matrix(sp.diags(binning.counts.astype(np.float32)) @ binning.mean_matrix if summed
-                                else binning.mean_matrix)
-        # Columns over all of X's cells: X[idx] would copy this sample's whole part of the matrix.
-        weights = sp.csr_matrix((weights.data, idx[weights.indices], weights.indptr), shape=(binning.n_bins, X.shape[0]))
-        if sp.issparse(X):
-            profiles += [sp.csr_matrix(weights[start:start + _PROFILE_CHUNK] @ X, dtype=np.float32)
-                         for start in range(0, binning.n_bins, _PROFILE_CHUNK)]
-        else:
-            profiles.append(np.asarray(weights @ X))
+        profiles += pool_chunks(X, idx, binning.sum_matrix if summed else binning.mean_matrix)
         binnings.append((idx, binning))
         samples += [sid] * binning.n_bins
         counts.append(binning.counts)

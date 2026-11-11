@@ -30,6 +30,8 @@ _BINNING_WIDTHS_KEPT = 3
 _TOP_K_BUDGET = 16_000_000
 #: the most variable genes of spots kept as raw counts are ranked on this many random spots
 _HVG_SAMPLE = 100_000
+#: gene sets' per-bin scores kept (each a float per bin of one sample)
+_GENE_SET_CACHE_SIZE = 64
 #: the obsm entries the viewer reads; loading leaves the others out of memory
 _OBSM_USED = ("spatial",)
 
@@ -143,6 +145,10 @@ class Dataset:
         self.gene_filter = None
         self._background_masks: dict = {}
         self.pathway_score_cache: dict[str, np.ndarray | None] = {}
+        # Gene sets' per-bin scores (bin_gene_set_scores), and the one sample's pooled bin
+        # profiles they were last scored on.
+        self._gene_set_cache: dict[tuple, tuple] = {}
+        self._pooled_cache: tuple | None = None
         # obs column -> celltyping.CellTypingResult, for showing per-cluster suggestions.
         self.celltype_results: dict = {}
         # obs column -> bin width (cell spacings) of clusterings made on hexagonal bins,
@@ -392,6 +398,60 @@ class Dataset:
             out[binning.sum(np.ones(len(idx)), mask) == 0] = np.nan
         return out
 
+
+    @property
+    def pools_hexagons(self) -> bool:
+        """Whether hexagons are scored from their spots' pooled counts: the load page pooled
+        the spots into hexagons, and kept the raw counts."""
+        return self.analysis_width is not None and self.counts is not None
+
+    def _pooled_profiles(self, idx: np.ndarray, binning, mask: np.ndarray | None, mask_key):
+        """(AnnData of the bins' pooled profiles - made like clustering.hex_profiles: summed
+        counts, normalize_total if hex_filter.normalize, log1p - of the bins the hexagon filter
+        keeps and with any cell in `mask`; those bins' indices). The last one is kept."""
+        key = (id(binning), mask_key, self.hex_filter)
+        if self._pooled_cache is not None and self._pooled_cache[0] == key and self._pooled_cache[1] is binning:
+            return self._pooled_cache[2]
+        self._pooled_cache = None  # free the old one first: they're big
+        weights = binning.sum_matrix
+        if mask is not None:
+            weights = sp.csr_matrix(weights @ sp.diags(mask.astype(np.float32)))
+        keep = self.kept_bins(idx, binning) & (np.asarray(weights.sum(axis=1)).ravel() > 0)
+        rows = np.flatnonzero(keep)
+        X = self.counts if not sp.issparse(self.counts) or self.counts.format == "csr" else sp.csr_matrix(self.counts)
+        parts = clustering.pool_chunks(X, idx, weights[rows])
+        pooled = ad.AnnData(clustering._stack_csr(parts, X.shape[1]) if sp.issparse(X) else np.vstack(parts),
+                            var=pd.DataFrame(index=self.adata.var_names))
+        if self.hex_filter.normalize:
+            # The same target as bin_gene_values: the median total of the analysed bins.
+            totals = binning.sum(self.cell_totals()[idx])[self.kept_bins(idx, binning)]
+            target = float(np.median(totals[totals > 0])) if (totals > 0).any() else 1.0
+            sc.pp.normalize_total(pooled, target_sum=target)
+        sc.pp.log1p(pooled)
+        self._pooled_cache = (key, binning, (pooled, rows))
+        return pooled, rows
+
+    def bin_gene_set_scores(self, genes: tuple[str, ...], idx: np.ndarray, binning,
+                            mask: np.ndarray | None = None) -> np.ndarray:
+        """scanpy score_genes of `genes` on each bin of `binning` (over the sample's cells
+        `idx`): on the bin's pooled profile - its cells' summed counts (only those in `mask`,
+        if given), normalized as chosen and log1p'd, as hexagons are clustered - with control
+        genes picked among the sample's bins. NaN for bins the hexagon filter leaves out or
+        without any cell in `mask`. Recent results are cached."""
+        mask_key = None if mask is None else hash(mask.tobytes())
+        key = (genes, id(binning), mask_key, self.hex_filter)
+        cached = self._gene_set_cache.get(key)
+        if cached is not None and cached[0] is binning:
+            return cached[1]
+        pooled, rows = self._pooled_profiles(idx, binning, mask, mask_key)
+        scores = np.full(binning.n_bins, np.nan)
+        if len(rows):
+            sc.tl.score_genes(pooled, gene_list=list(genes), score_name="_score", random_state=0, use_raw=False)
+            scores[rows] = pooled.obs.pop("_score").to_numpy(dtype=float)
+        if len(self._gene_set_cache) >= _GENE_SET_CACHE_SIZE:
+            self._gene_set_cache.pop(next(iter(self._gene_set_cache)))
+        self._gene_set_cache[key] = (binning, scores)
+        return scores
 
     def background_mask(self) -> np.ndarray:
         """Boolean mask over var_names of the background genes self.gene_filter leaves

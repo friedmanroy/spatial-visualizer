@@ -1,9 +1,10 @@
 """Aggregating very large samples onto a hexagonal lattice, so the browser draws (and
 recolors) one hexagon per bin instead of one marker per cell.
 
-A gene's value in a bin comes from its cells' summed counts, normalized per bin, when the
-app normalized the data (Dataset.bin_gene_values); otherwise, and for pathway scores, the
-cells' values are averaged. Categorical fields show each bin's most common (selected)
+A gene's value in a bin comes from its cells' summed counts, log1p'd (normalized first if
+chosen) per bin, when the app kept the raw counts (Dataset.bin_gene_values); otherwise the
+cells' values are averaged. Pathway scores are computed on the bins' pooled profiles when the
+load page pooled the spots into hexagons (Dataset.bin_gene_set_scores), else averaged too. Categorical fields show each bin's most common (selected)
 category.
 """
 from __future__ import annotations
