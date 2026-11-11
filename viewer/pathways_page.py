@@ -51,9 +51,8 @@ def build_pathways_page(state) -> pn.viewable.Viewable:
 
     def pathways_changed(name: str):
         state.pathways = pathways_mod.load_pathways(state.pathways_path)
-        for ds in (state.spatial, state.embedding):
-            if ds is not None:
-                ds.pathway_score_cache.pop(name, None)  # its genes may have changed
+        if state.spatial is not None:
+            state.spatial.pathway_score_cache.pop(name, None)  # its genes may have changed
         for listener in state.pathway_listeners:
             listener(name)
         refresh_custom_list()

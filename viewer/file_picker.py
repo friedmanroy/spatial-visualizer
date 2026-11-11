@@ -1,6 +1,6 @@
 """A text path input paired with a native OS file-picker dialog, so a file can either
-be typed by path or found by browsing - reused by the landing page and the scRNA/snRNA
-companion-file prompt. The dialog pops up as its own window, which only works because
+be typed by path or found by browsing - used by the landing page and
+the Cell types tab's import. The dialog pops up as its own window, which only works because
 the app runs locally (`python st_visualizer.py`) with a real display, not in a
 headless/remote environment.
 

@@ -8,7 +8,6 @@ import weakref
 
 import panel as pn
 
-from .embedding_page import build_embedding_page
 from .busy_overlay import BusyOverlay
 from .de_dialog import DEDialog
 from .celltype_controls import CellTypingControls
@@ -46,12 +45,10 @@ def build() -> pn.viewable.Viewable:
 
     def show_viewer():
         spatial_tab = build_spatial_page(state)
-        embedding_tab = build_embedding_page(state)
         pathways_tab = build_pathways_page(state)
         markers_tab = build_markers_page(state)
         tabs = pn.Tabs(
-            ("Spatial", spatial_tab), ("scRNA / snRNA", embedding_tab), ("Pathways", pathways_tab),
-            ("Cell types", markers_tab),
+            ("Spatial", spatial_tab), ("Pathways", pathways_tab), ("Cell types", markers_tab),
             sizing_mode="stretch_both",
         )
         root.sizing_mode = "stretch_both"

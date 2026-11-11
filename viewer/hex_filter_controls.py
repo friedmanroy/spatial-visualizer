@@ -1,6 +1,6 @@
 """Widgets choosing which hexagons are analysed and whether they're normalized, with the
 distribution of their total counts - shared by the landing page, the Spatial tab's Leiden
-panel and the scRNA tab, so the choice carries over."""
+panel, so the choice carries over."""
 from __future__ import annotations
 
 import numpy as np
@@ -46,8 +46,8 @@ class HexFilterControls:
         for w in (self.normalize, self.min_coverage, self.min_counts, self.min_gene_detection):
             w.param.watch(self._notify, "value")
         self.layout = pn.Column(
-            pn.pane.HTML("<b>Hexagons with too little data</b> are left out of clustering, cell typing, "
-                         "PCA / UMAP and differential expression, and drawn gray. Run Leiden again to apply "
+            pn.pane.HTML("<b>Hexagons with too little data</b> are left out of clustering, cell typing and "
+                         "differential expression, and drawn gray. Run Leiden again to apply "
                          "a change to existing clusters.", margin=(8, 5, 0, 5), sizing_mode="stretch_width"),
             self.min_coverage, self.min_counts, self.histogram, self.info, self.normalize, self.normalize_hint,
             self.min_gene_detection,

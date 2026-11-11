@@ -1,5 +1,5 @@
-"""Shared scanpy preprocessing (HVG -> scale -> PCA -> neighbor graph) used both for the
-PCA/UMAP embedding and for optional Leiden clustering at load time.
+"""Shared scanpy preprocessing (HVG -> scale -> PCA -> neighbor graph) used for
+Leiden clustering.
 
 Always works on a highly-variable-gene subset *copy*, so the dataset's own .X (used
 elsewhere for gene-expression coloring) is never mutated by scaling.
@@ -12,7 +12,7 @@ own log values. Bins with too little data are left out first (hexbin.HexFilter),
 spots stay unlabeled.
 
 Broadly expressed "background" genes (mitochondrial, ribosomal, or detected almost
-everywhere) can be left out of the genes PCA / UMAP / Leiden use - see GeneFilter.
+everywhere) can be left out of the genes PCA / Leiden use - see GeneFilter.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ DEFAULT_N_NEIGHBORS = 15
 DEFAULT_LEIDEN_RESOLUTION = 1.0
 #: sparse hexagon profiles are summed this many hexagons at a time
 _PROFILE_CHUNK = 2_000
-#: what clustering / PCA / UMAP run on (labels of the choice shown in the UI)
+#: what clustering runs on (labels of the choice shown in the UI)
 HEXAGONS, CELLS = "Hexagons", "Individual cells"
 #: gene-name prefixes (case-insensitive) of mitochondrial and ribosomal-protein genes
 MITO_PREFIXES = ("MT-", "MT.")
@@ -38,7 +38,7 @@ RIBO_PREFIXES = ("RPS", "RPL", "MRPS", "MRPL")
 
 @dataclass(frozen=True)
 class GeneFilter:
-    """Background genes to leave out of PCA / UMAP / Leiden (and cell typing)."""
+    """Background genes to leave out of PCA / Leiden (and cell typing)."""
     mito: bool = True
     ribo: bool = False
     #: leave out genes detected (> 0) in more than this fraction of the cells / hexagons

@@ -1,7 +1,7 @@
 """Widgets choosing which broadly expressed "background" genes (mitochondrial,
-ribosomal, or detected almost everywhere) to leave out of PCA / UMAP / Leiden, cell
+ribosomal, or detected almost everywhere) to leave out of PCA / Leiden, cell
 typing and the "most expressed genes" shown on the plots - shared by the landing page,
-the Spatial tab's Leiden panel and the scRNA tab, so the choice carries over."""
+the Spatial tab's Leiden panel, so the choice carries over."""
 from __future__ import annotations
 
 import html

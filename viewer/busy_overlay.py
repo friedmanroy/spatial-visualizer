@@ -1,5 +1,5 @@
 """A full-page "working..." overlay: grays out the whole app and says what is happening
-while a long step (loading a file, clustering, PCA/UMAP, cell typing, waiting for the
+while a long step (loading a file, clustering, cell typing, waiting for the
 file dialog) runs. Blocks clicks meanwhile, so nothing is started twice.
 
 The box lists the stages done so far (with how long each took), the one running now,

@@ -1,5 +1,4 @@
-"""Shared 'Field' / 'Gene & Pathway' coloring controls, reused by the Spatial page and
-the scRNA/snRNA embedding page so the two don't duplicate ~150 lines of widget wiring.
+"""Shared 'Field' / 'Gene & Pathway' coloring controls, used by the Spatial page.
 
 The Gene & Pathway section mirrors the TNBC viewer's layout closely: one shared
 Gene/Pathway mode for all three channels, each channel's controls stacked vertically
@@ -477,8 +476,7 @@ class ColorControls:
                     self.value_picker_box[0].objects = rows
             noun = "value ranges" if spec.kind == "binned_continuous" else "categories"
             where = "in this sample" if active_idx is not None else "in total"
-            unit = "hexagon" if getattr(self.get_dataset(), "hex_source", None) is not None else "cell"
-            self.field_summary.object = f"{len(spec.categories)} {noun} · {unit} counts {where}"
+            self.field_summary.object = f"{len(spec.categories)} {noun} · cell counts {where}"
 
     def _on_color_change(self, spec, field: str, category: str, new_color: str):
         spec.colors[category] = new_color

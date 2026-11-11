@@ -31,7 +31,7 @@ _TOP_K_BUDGET = 16_000_000
 #: the most variable genes of spots kept as raw counts are ranked on this many random spots
 _HVG_SAMPLE = 100_000
 #: the obsm entries the viewer reads; loading leaves the others out of memory
-_OBSM_USED = ("spatial", "X_pca", "X_umap")
+_OBSM_USED = ("spatial",)
 
 
 def read_viewer_file(path: str):
@@ -106,8 +106,6 @@ def top_k_per_row(X, k: int, exclude: np.ndarray | None = None) -> np.ndarray:
 class Dataset:
     """Wraps one AnnData plus the caches used by the coloring/plotting machinery.
 
-    Used identically for the main spatial AnnData and for a companion scRNA/snRNA
-    AnnData (or a spatial-derived embedding reusing the same object).
     """
 
     def __init__(self, adata, name: str = "dataset"):
@@ -148,9 +146,6 @@ class Dataset:
         self.hex_clusterings: dict[str, float] = {}
         # obs column -> the hexbin.HexFilter its hexagons were clustered with.
         self.hex_cluster_filters: dict[str, hexbin.HexFilter] = {}
-        # For a dataset of hexagon profiles made from another one (the scRNA tab's
-        # hexagon PCA/UMAP): (that Dataset, [(cell indices, HexBinning)] per sample).
-        self.hex_source: tuple | None = None
         # None means "no restriction, offer every eligible field"; otherwise only
         # these column names are offered as "color by" options (set on the landing
         # page so irrelevant obs columns don't clutter the field picker).
@@ -303,7 +298,7 @@ class Dataset:
         the dataset's own AnnData, or - while .X stays raw counts (raw_spots) - a
         normalize_total + log1p copy of it, made the first time it's needed and kept
         (it doubles the memory .X takes). For per-spot analyses: Leiden on cells,
-        PCA / UMAP of cells, pathway scores, differential expression of spots."""
+        pathway scores, differential expression of spots."""
         if not self.raw_spots:
             return self.adata
         if self._lognorm is None:
@@ -423,7 +418,6 @@ class Dataset:
 class AppState:
     def __init__(self):
         self.spatial: Dataset | None = None
-        self.embedding: Dataset | None = None
         self.pathways: dict = {}
         self.pathways_path: str = ""
         # Called with a pathway name whenever the Pathways tab adds/changes/removes one.
@@ -438,7 +432,7 @@ class AppState:
         # Cell-typing settings (celltype_controls.CellTypingControls), shared by the
         # landing page and the Spatial tab so choices carry over.
         self.celltyping = None
-        # Background genes left out of PCA / UMAP / Leiden and cell typing
+        # Background genes left out of PCA / Leiden and cell typing
         # (gene_filter_controls.GeneFilterControls), shared like the cell-typing settings.
         self.gene_filter = None
         # Which hexagons are analysed and whether they're normalized

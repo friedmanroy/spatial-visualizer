@@ -21,7 +21,6 @@ dependencies = [
     "matplotlib==3.11.2",
     "scikit-learn==1.9.1",
     "h5py==3.16.0",
-    "umap-learn==0.5.12",
     "igraph==1.0.0",  # for Leiden clustering
     "decoupler==2.3.1",  # for marker-based cell typing of Leiden clusters
     "openpyxl==3.1.5",  # for importing marker databases from .xlsx (CellMarker 2.0)

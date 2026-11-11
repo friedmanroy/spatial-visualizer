@@ -94,7 +94,7 @@ class RegionsPanel:
         self.show_outlines.param.watch(self._on_show_outlines, "value")
         self.save_btn = pn.widgets.Button(
             name=f"Save as field '{self.field_name}'", sizing_mode="stretch_width", margin=(5, 5),
-            description="Adds the regions as a field to color by (here and on the scRNA / snRNA tab)",
+            description="Adds the regions as a field to color by",
         )
         self.clear_btn = pn.widgets.Button(name="Clear all", button_type="light", width=110, margin=(5, 5))
         self.save_btn.on_click(self._on_save)

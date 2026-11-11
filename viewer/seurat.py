@@ -1,6 +1,6 @@
 """Reads a Seurat object saved with saveRDS (.rds) into the same kind of AnnData the
 viewer makes of an .h5ad: counts in X, meta.data as obs, gene names as var, spot / cell
-coordinates in obsm['spatial'] and any PCA / UMAP in obsm['X_pca'] / obsm['X_umap'].
+coordinates in obsm['spatial'].
 
 Read in pure Python with the `rdata` package (no R needed), which turns S4 objects into
 SimpleNamespaces of their slots. Both object layouts are handled:
@@ -28,8 +28,6 @@ _PREFERRED_ASSAYS = ("Spatial",)
 #: meta.data column pairs (x, y) taken as coordinates when no image has any
 _COORD_COLUMNS = (("x", "y"), ("X", "Y"), ("x_centroid", "y_centroid"), ("imagecol", "imagerow"),
                   ("coord_x", "coord_y"), ("spatial_1", "spatial_2"))
-#: Seurat reduction name -> obsm key the viewer reads
-_REDUCTIONS = {"pca": "X_pca", "umap": "X_umap"}
 
 
 def is_rds(path: str) -> bool:
@@ -40,7 +38,7 @@ def read_seurat_rds(path: str) -> ad.AnnData:
     """An AnnData of the Seurat object saved in the .rds file at `path`. Raw counts are
     preferred (the viewer normalizes them itself), else the normalized "data". Cells no
     image or coordinate column places are left out; with no coordinates at all, every
-    cell is kept and obsm has no 'spatial' (fine for the scRNA / snRNA page)."""
+    cell is kept and obsm has no 'spatial'."""
     import rdata  # only needed for .rds files
 
     with warnings.catch_warnings():
@@ -75,10 +73,6 @@ def read_seurat_rds(path: str) -> ad.AnnData:
     obsm = {}
     if coords is not None:
         obsm["spatial"] = coords.loc[keep, ["x", "y"]].to_numpy(dtype=float)
-    for name, key in _REDUCTIONS.items():
-        embedding = _embedding(_as_dict(slots.get("reductions")).get(name), keep)
-        if embedding is not None:
-            obsm[key] = embedding
     return ad.AnnData(X=X[rows], obs=obs, var=pd.DataFrame(index=pd.Index(genes, dtype=str)), obsm=obsm,
                       uns={"seurat": {"assay": assay_name, "layer": layer}})
 
@@ -283,14 +277,3 @@ def _column_coordinates(meta: pd.DataFrame, reductions) -> pd.DataFrame | None:
             return pd.DataFrame(xy[:, :2].astype(float), index=cells, columns=["x", "y"])
     return None
 
-
-def _embedding(reduction, cells: pd.Index) -> np.ndarray | None:
-    """A reduction's cell embeddings in the order of `cells`, or None if it doesn't cover them all."""
-    value = _slots(reduction).get("cell.embeddings")
-    if value is None:
-        return None
-    array, (rows, _) = _labelled_array(value)
-    if array.ndim != 2 or array.shape[1] < 2 or rows is None:
-        return None
-    idx = pd.Index(rows).get_indexer(cells)
-    return None if (idx < 0).any() else array[idx].astype(float)

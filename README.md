@@ -35,11 +35,11 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
 - **Normalization** - after loading, a checkbox chooses whether to normalize `.X`
   (`normalize_total` + `log1p`); it's ticked when `.X` looks like raw counts, and the choice
   is remembered per file. Each cell / spot is normalized for coloring and differential
-  expression, but hexagons (clustering, cell typing and PCA/UMAP on hexagons) **sum their
+  expression, but hexagons (clustering and cell typing on hexagons) **sum their
   spots' raw counts first**, then get `log1p` as one unit, after `normalize_total` by default
   (a separate checkbox). Left unticked, `.X` is used as-is and a hexagon holds its spots' mean.
-- **Hexagon filter** - hexagons with too little data are left out of clustering, cell typing,
-  PCA/UMAP and differential expression, before normalizing, and drawn gray with their spots
+- **Hexagon filter** - hexagons with too little data are left out of clustering, cell typing
+  and differential expression, before normalizing, and drawn gray with their spots
   unlabeled: by default those with under 50% of their sample's median spots per hexagon (a
   tile's rim, fiducial marks) or under 15 total counts. A histogram of total counts shows what
   the minimum removes. Keep it low: low counts alone can be real tissue, such as white matter.
@@ -52,7 +52,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
   single-cell data.
 - **Background genes** - mitochondrial (`MT-`), ribosomal-protein (`RPS`/`RPL`) and genes
-  detected in almost every cell / hexagon can be left out of clustering, PCA/UMAP, cell typing
+  detected in almost every cell / hexagon can be left out of clustering, cell typing
   and the "most expressed genes" shown (mitochondrial genes are left out by default).
 - **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
   a marker database's genes - PanglaoDB (default), CellTypist (finer immune subtypes) or
@@ -90,7 +90,7 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   with their name, and can be renamed, recolored or deleted. Membership is tested against every
   cell of the sample, so it works the same over hexagonal bins or zoomed-in cells. **Gray out
   cells outside the regions** keeps any coloring only inside them, and **Save as field** adds
-  them as a `regions` field to color by (here and on the scRNA / snRNA tab; `regions_2` if the
+  them as a `regions` field to color by (`regions_2` if the
   file already has a `regions` column). Regions are saved with the file in `cache/` and come
   back the next time it's opened with the same sample/FOV column.
 - **Differential expression between regions** - compare each region with the rest of its
@@ -101,15 +101,11 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   searchable, sortable gene table (log2 FC, adjusted p-value, % of cells expressing on each
   side), buttons to color by the top up / down or checked genes, and a CSV download. Cells
   in one drawn region aren't independent replicates, so treat the p-values as a ranking.
-- **scRNA / snRNA companion page** - load a second `.h5ad` file, or compute PCA/UMAP on demand
-  from the spatial data itself - by default on its hexagons (one point per hexagon, colored by
-  its most common category), or on individual cells - with configurable number of PCs and neighbors. Uses scanpy's
-  own `sc.pp.pca` / `sc.pp.neighbors` / `sc.tl.umap`.
 - **Persistent choices** - custom category colors, which fields are enabled, the
   sample/FOV column and the drawn regions are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
-- **Loading overlay** - long steps (loading, clustering, PCA/UMAP...) gray out the page with a
+- **Loading overlay** - long steps (loading, clustering, cell typing...) gray out the page with a
   checklist of the step's stages and a live timer for each.
 - **Error dialog** - any unexpected error shows a popup with the traceback instead of silently
   freezing the page.
@@ -209,9 +205,6 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
 3. Click **Open viewer**. The **Spatial** tab shows each cell as a hexagon, square or circle (auto-detected)
    (sized so they tile the tissue by default, adjustable with the **Cell size** slider) with per-sample
    navigation and the Field / Gene & Pathway coloring controls described above.
-4. The **scRNA / snRNA** tab lets you load a companion single-cell dataset, or compute a
-   PCA/UMAP embedding directly from the spatial data on demand (this can take a while for large
-   datasets, hence "on demand" rather than automatic).
 
 Closing the last browser tab shuts the server down automatically (after a ~30 s grace
 period, so a page reload doesn't).
@@ -240,7 +233,6 @@ viewer/
   regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
   de.py                    differential expression between regions (scanpy rank_genes_groups)
   de_dialog.py             pop-up with DE results: volcano plot, gene table, CSV download
-  embedding_page.py        "scRNA / snRNA" tab
   pathways_page.py         "Pathways" tab: add/remove custom gene sets
   color_controls.py        shared Field / Gene & Pathway coloring controls
   fields.py                 generic obs-column classification (categorical/binned/unusable)

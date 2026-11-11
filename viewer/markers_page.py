@@ -182,9 +182,8 @@ def build_markers_page(state) -> pn.viewable.Viewable:
             )
         state.pathways = pathways_mod.load_pathways(state.pathways_path)
         for m in chosen:
-            for ds in (state.spatial, state.embedding):
-                if ds is not None:
-                    ds.pathway_score_cache.pop(PATHWAY_PREFIX + m.name, None)
+            if state.spatial is not None:
+                state.spatial.pathway_score_cache.pop(PATHWAY_PREFIX + m.name, None)
             for listener in state.pathway_listeners:
                 listener(PATHWAY_PREFIX + m.name)
         names = ", ".join(f"<b>{html.escape(PATHWAY_PREFIX + m.name)}</b>" for m in chosen)

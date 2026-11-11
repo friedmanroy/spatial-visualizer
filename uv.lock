@@ -2067,7 +2067,6 @@ dependencies = [
     { name = "scanpy" },
     { name = "scikit-learn" },
     { name = "scipy" },
-    { name = "umap-learn" },
 ]
 
 [package.metadata]
@@ -2085,7 +2084,6 @@ requires-dist = [
     { name = "scanpy", specifier = "==1.12.4" },
     { name = "scikit-learn", specifier = "==1.9.1" },
     { name = "scipy", specifier = "==1.18.1" },
-    { name = "umap-learn", specifier = "==0.5.12" },
 ]
 
 [[package]]

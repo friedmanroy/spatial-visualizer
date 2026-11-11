@@ -5,8 +5,7 @@ cache/custom_pathways.json and merged in on load, so the default pathways.json i
 modified (it lives inside the installed package, which the launchers replace on update).
 
 Ported from the TNBC viewer's scanpy score_genes pattern, generalized to take the
-target AnnData as a parameter (so the same scoring works for the spatial data and any
-scRNA/snRNA companion data).
+target AnnData as a parameter (so the same scoring works for any dataset).
 """
 from __future__ import annotations
 
