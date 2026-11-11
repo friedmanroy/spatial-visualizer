@@ -27,6 +27,8 @@ import scipy.sparse as sp
 DEFAULT_N_PCS = 10
 DEFAULT_N_NEIGHBORS = 15
 DEFAULT_LEIDEN_RESOLUTION = 1.0
+#: principal components added as fields when a file is opened (add_principal_components)
+N_LOAD_PCS = 5
 #: sparse hexagon profiles are summed this many hexagons at a time
 _PROFILE_CHUNK = 2_000
 #: gene-name prefixes (case-insensitive) of mitochondrial and ribosomal-protein genes
@@ -137,6 +139,25 @@ def neighbors_graph(adata, n_pcs: int, n_neighbors: int, report=_no_report,
     """Returns a scaled HVG-subset copy of `adata` with PCA and a neighbor graph
     computed, leaving out the background genes `gene_filter` names. Also stores the PCA
     on `adata.obsm['X_pca']`."""
+    hvg_mask = _analysis_genes(adata, report, gene_filter)
+    unit = adata.uns.get("unit", "cells")  # hex_profiles' bins say "hexagons"
+    report(f"Scaling the expression of {int(hvg_mask.sum()):,} genes in {adata.n_obs:,} {unit}")
+    tmp = adata[:, hvg_mask].copy()
+    sc.pp.scale(tmp, max_value=10)
+    n_comps = max(2, min(n_pcs, tmp.n_vars - 1, tmp.n_obs - 1))
+    report(f"Computing PCA ({n_comps} components)")
+    sc.pp.pca(tmp, n_comps=n_comps, svd_solver="arpack")
+    adata.obsm["X_pca"] = tmp.obsm["X_pca"]
+
+    n_neigh = max(2, min(n_neighbors, tmp.n_obs - 1))
+    report(f"Building the neighbor graph ({n_neigh} neighbors per {unit[:-1]})")
+    sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps)
+    return tmp
+
+
+def _analysis_genes(adata, report=_no_report, gene_filter: GeneFilter | None = None) -> np.ndarray:
+    """Boolean mask over adata's genes that PCA uses: the highly variable ones (the file's
+    own choice, else the 2000 most variable), leaving out background genes."""
     keep = ~background_genes(adata, gene_filter)
     if keep.sum() < 2:
         raise ValueError("Leaving out the background genes leaves fewer than 2 genes - "
@@ -157,20 +178,42 @@ def neighbors_graph(adata, n_pcs: int, n_neighbors: int, report=_no_report,
         hvg_mask[np.flatnonzero(candidates)] = hvg["highly_variable"].to_numpy(dtype=bool)
     if hvg_mask.sum() < 2:
         hvg_mask = keep
+    return hvg_mask
 
-    unit = adata.uns.get("unit", "cells")  # hex_profiles' bins say "hexagons"
-    report(f"Scaling the expression of {int(hvg_mask.sum()):,} genes in {adata.n_obs:,} {unit}")
-    tmp = adata[:, hvg_mask].copy()
-    sc.pp.scale(tmp, max_value=10)
-    n_comps = max(2, min(n_pcs, tmp.n_vars - 1, tmp.n_obs - 1))
-    report(f"Computing PCA ({n_comps} components)")
+
+def add_principal_components(dataset, n: int = N_LOAD_PCS, report=_no_report,
+                             gene_filter: GeneFilter | None = None) -> list[str]:
+    """Adds the first `n` principal components of the expression as obs columns PC1, PC2...
+    (returning their names): of the hexagons the load page pooled the spots into
+    (dataset.analysis_width; each spot gets its hexagon's value, NaN if the hexagon filter
+    leaves it out), else of the cells. Same genes as clustering (_analysis_genes), each
+    scaled to unit variance; sparse data stays sparse (centered implicitly by the PCA), so
+    this doesn't need a dense copy of a million-cell matrix."""
+    width = dataset.analysis_width
+    binnings = None
+    if width is not None:
+        report(f"{hex_profile_verb(dataset)} within hexagonal bins ({len(dataset.sample_ids)} sample(s))")
+        units, binnings = hex_profiles(dataset, width)
+    else:
+        units = dataset.expression()
+    genes = _analysis_genes(units, report, gene_filter)
+    unit = units.uns.get("unit", "cells")
+    report(f"Computing the first {n} principal components of {units.n_obs:,} {unit} ({int(genes.sum()):,} genes)")
+    tmp = units[:, genes].copy()
+    sc.pp.scale(tmp, zero_center=not sp.issparse(tmp.X), max_value=10)
+    n_comps = max(1, min(n, tmp.n_vars - 1, tmp.n_obs - 1))
     sc.pp.pca(tmp, n_comps=n_comps, svd_solver="arpack")
-    adata.obsm["X_pca"] = tmp.obsm["X_pca"]
-
-    n_neigh = max(2, min(n_neighbors, tmp.n_obs - 1))
-    report(f"Building the neighbor graph ({n_neigh} neighbors per {unit[:-1]})")
-    sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps)
-    return tmp
+    scores = tmp.obsm["X_pca"].astype(np.float32)
+    columns = []
+    for k in range(n_comps):
+        col = f"PC{k + 1}"
+        values = scores[:, k] if binnings is None else bins_to_cells(scores[:, k], binnings, dataset.adata.n_obs,
+                                                                      fill=np.nan)
+        dataset.remove_field(col)
+        dataset.adata.obs[col] = values
+        dataset.signed_fields.add(col)
+        columns.append(col)
+    return columns
 
 
 def clustering_columns(adata) -> list[str]:

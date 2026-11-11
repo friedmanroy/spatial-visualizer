@@ -306,6 +306,16 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 ds.normalized_spots = True
         normalize_checkbox.disabled = ds.counts is not None
         gene_filter = state.gene_filter.value
+        if "PC1" not in ds.signed_fields:  # once, should opening be retried
+            units = "hexagons" if ds.analysis_width is not None else f"{ds.adata.n_obs:,} cells"
+            try:
+                async with busy.show("Computing principal components...", f"on the {units}, {gene_filter.describe()}"):
+                    pcs = await asyncio.to_thread(clustering.add_principal_components, ds, report=busy.step,
+                                                  gene_filter=gene_filter)
+                for col in pcs:
+                    ds.add_field(col)
+            except Exception:  # nice to have: the viewer still opens without them
+                traceback.print_exc(file=sys.stderr)
         cluster_col = None
         if leiden_checkbox.value:
             hexes = ds.analysis_width is not None

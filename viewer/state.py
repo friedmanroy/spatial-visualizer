@@ -160,6 +160,9 @@ class Dataset:
         # these column names are offered as "color by" options (set on the landing
         # page so irrelevant obs columns don't clutter the field picker).
         self.allowed_fields: set[str] | None = None
+        # Fields centered on 0 (principal components): colored symmetrically around it in
+        # a gene channel, like pathway scores.
+        self.signed_fields: set[str] = set()
         # Set right after construction (landing page) once the source file path is
         # known; carries any custom category colors saved from a previous session.
         self.color_cache = None  # viewer.cache.ColorCache | None

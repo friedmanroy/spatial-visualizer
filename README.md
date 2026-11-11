@@ -48,6 +48,11 @@ which obs column separates samples/fields-of-view, and color everything either b
   the minimum removes. Keep it low: low counts alone can be real tissue, such as white matter.
   The same panel sets how widely a gene must be detected to be picked as variable for PCA and
   Leiden on hexagons (by default in at least 2% of them).
+- **Principal components** - opening the viewer adds the first 5 principal components of the
+  expression as fields `PC1`-`PC5` (same genes as clustering, scaled), computed on the hexagons
+  when the load page pooled spots into them (each spot gets its hexagon's value), else on the
+  cells. In a Gene & Pathway channel (`PC1 (field)`...), positive and negative values get
+  opposite colors.
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
   using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`), on the hexagons
   when the load page pooled spots into them (every spot gets its hexagon's cluster), else on

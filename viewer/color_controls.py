@@ -33,8 +33,8 @@ _FIELD_SUFFIX = " (field)"
 _GENE_HINT = (
     "Each channel colors cells by one gene: brighter = higher expression. "
     "Use up to three channels; overlapping expression mixes the colors. "
-    f"Continuous fields (e.g. total counts, cell-type confidence) can go in a channel too - "
-    f"listed as <i>name{_FIELD_SUFFIX}</i>. "
+    f"Continuous fields (e.g. total counts, cell-type confidence, and the first principal components "
+    f"PC1-PC5 of the expression) can go in a channel too - listed as <i>name{_FIELD_SUFFIX}</i>. "
     "On the Spatial tab, click a cell to show its 3 most expressed."
 )
 _PATHWAY_HINT = (
@@ -619,7 +619,8 @@ class ColorControls:
             if is_gene:
                 gene = genes[label] = w["gene"].value.strip()
                 values = self._channel_values(dataset, gene) if gene else None
-                channels[label] = (values, False)
+                # Principal components are centered on 0: + and - get opposite colors.
+                channels[label] = (values, self._field_column(dataset, gene) in dataset.signed_fields)
             else:
                 pname = genes[label] = w["pathway"].value
                 values = self._pathway_values(dataset, pname, pathways, binning) if pname else None
