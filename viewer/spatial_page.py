@@ -21,6 +21,7 @@ from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
 from .colors import GRAY, GRAY_RGBA
 from .figure_saving import figure_save_controls
+from .h5ad_export import h5ad_save_controls
 from .regions_panel import RegionsPanel
 
 
@@ -820,8 +821,13 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         prepare_figure, state.busy,
         "Saves exactly what the plot shows now - same view, colors, regions - as a figure with a legend",
     )
-    header_row = pn.Row(plot_header, save_controls, sizing_mode="stretch_width", margin=0)
-    plot_area = pn.Column(header_row, save_figure_status, bokeh_pane, sizing_mode="stretch_both", margin=0)
+    save_h5ad_button, save_h5ad_status = h5ad_save_controls(
+        lambda: dataset, lambda: state.pathways,
+        lambda: (regions_panel.regions, regions_panel.field_name), state.busy,
+    )
+    header_row = pn.Row(plot_header, save_controls, save_h5ad_button, sizing_mode="stretch_width", margin=0)
+    plot_area = pn.Column(header_row, save_figure_status, save_h5ad_status, bokeh_pane,
+                          sizing_mode="stretch_both", margin=0)
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
 
 

@@ -115,6 +115,13 @@ which obs column separates samples/fields-of-view, and color everything either b
   searchable, sortable gene table (log2 FC, adjusted p-value, % of cells expressing on each
   side), buttons to color by the top up / down or checked genes, and a CSV download. Cells
   in one drawn region aren't independent replicates, so treat the p-values as a ranking.
+- **Save .h5ad** - the red button next to **Save figure…** saves the data with everything the
+  viewer added as a new `.h5ad`, at the finest resolution it holds (the file's cells / spots,
+  or the ~2 million hexagons per sample of a pooled huge file): `.X` as loaded (raw counts),
+  every obs column including Leiden clusterings, suggested cell types and principal
+  components, each pathway's score as `pathway_<name>` (scored as the plot shows it - per
+  spot, or on its hexagon when spots are pooled), the drawn regions as a `regions` column,
+  and the categories' colors in `uns`.
 - **Persistent choices** - custom category colors, which fields are enabled, the
   sample/FOV column and the drawn regions are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
@@ -243,6 +250,7 @@ viewer/
   app.py                 assembles the landing page and the tabbed main viewer
   landing.py              load page: file, samples, hexagons, normalization, Leiden, cell types
   prepool.py              pooling samples over 30M spots into ~2M hexagons while the file is read
+  h5ad_export.py          "Save .h5ad…": the data plus everything the viewer added
   spatial_page.py          "Spatial" tab
   regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
   regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
