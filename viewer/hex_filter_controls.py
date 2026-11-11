@@ -1,6 +1,6 @@
-"""Widgets choosing which hexagons are analysed and whether they're normalized, with the
-distribution of their total counts - shared by the landing page, the Spatial tab's Leiden
-panel, so the choice carries over."""
+"""Widgets choosing which hexagons are analysed, with the distribution of their total
+counts - shared by the landing page and the Spatial tab's Leiden panel, so the choice
+carries over."""
 from __future__ import annotations
 
 import numpy as np
@@ -13,14 +13,9 @@ from .histogram import render_totals_histogram
 
 class HexFilterControls:
     def __init__(self):
-        self.normalize = pn.widgets.Checkbox(
-            name="Normalize the remaining hexagons' total counts", value=True, margin=(2, 5, 0, 5),
-        )
-        self.normalize_hint = pn.pane.HTML(
-            "Scales every hexagon to the same total before the log1p, which always applies. Unticked, "
-            "hexagons with more counts look more expressed overall, and that tends to dominate clustering.",
-            styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 25),
-        )
+        # Whether hexagons (and cells) are normalize_total'd before the log1p: chosen on the
+        # load page, before the data is normalized, so not a widget here.
+        self.normalize = False
         self.min_coverage = pn.widgets.IntInput(
             name="Minimum spots per hexagon (% of the sample's median)",
             value=round(hexbin.DEFAULT_MIN_COVERAGE * 100), start=0, end=100, step=5, sizing_mode="stretch_width",
@@ -43,20 +38,20 @@ class HexFilterControls:
         self.listeners: list = []
         self._target = None  # (dataset, sample, width factor, hexagons' total counts or None) described
         keep_filled(self.min_coverage, self.min_counts, self.min_gene_detection)
-        for w in (self.normalize, self.min_coverage, self.min_counts, self.min_gene_detection):
+        for w in (self.min_coverage, self.min_counts, self.min_gene_detection):
             w.param.watch(self._notify, "value")
         self.layout = pn.Column(
             pn.pane.HTML("<b>Hexagons with too little data</b> are left out of clustering, cell typing and "
                          "differential expression, and drawn gray. Run Leiden again to apply "
                          "a change to existing clusters.", margin=(8, 5, 0, 5), sizing_mode="stretch_width"),
-            self.min_coverage, self.min_counts, self.histogram, self.info, self.normalize, self.normalize_hint,
+            self.min_coverage, self.min_counts, self.histogram, self.info,
             self.min_gene_detection,
             sizing_mode="stretch_width", margin=0,
         )
 
     @property
     def value(self) -> hexbin.HexFilter:
-        return hexbin.HexFilter(self.min_coverage.value / 100, self.min_counts.value, self.normalize.value,
+        return hexbin.HexFilter(self.min_coverage.value / 100, self.min_counts.value, self.normalize,
                                 self.min_gene_detection.value / 100)
 
     def _notify(self, *events):
@@ -73,7 +68,7 @@ class HexFilterControls:
         if cell_totals is not None:  # kept, as changing the filter redraws this on the event loop
             totals = dataset.hex_binning(sample, width_factor).sum(cell_totals[dataset.sample_indices(sample)])
         self._target = (dataset, sample, width_factor, totals)
-        self.min_counts.visible = self.normalize.visible = self.normalize_hint.visible = totals is not None
+        self.min_counts.visible = totals is not None
         self._update_info()
 
     def _update_info(self):

@@ -130,8 +130,12 @@ class Dataset:
         self._gene_cache: dict[str, np.ndarray] = {}
         self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
         self._cell_totals: np.ndarray | None = None  # each cell's total of self.counts
-        # Which hexagons are analysed and whether they're normalized (hexbin.HexFilter).
+        # Which hexagons are analysed and whether they're normalized (hexbin.HexFilter);
+        # its `normalize` is the load page's choice for cells as well as hexagons.
         self.hex_filter = hexbin.HexFilter()
+        # Hexagon width (cell spacings) Leiden and cell typing run on, chosen on the load
+        # page for samples too large to analyse spot by spot; None = on the cells themselves.
+        self.analysis_width: float | None = None
         self._var_upper_lookup: dict[str, str] | None = None
         self._variable_ranking: np.ndarray | None = None  # var indices, most variable first
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
@@ -296,14 +300,19 @@ class Dataset:
     def expression(self):
         """An AnnData with this dataset's genes whose .X is log-normalized expression:
         the dataset's own AnnData, or - while .X stays raw counts (raw_spots) - a
-        normalize_total + log1p copy of it, made the first time it's needed and kept
+        normalize_total (if hex_filter.normalize) + log1p copy of it, made the first time it's needed and kept
         (it doubles the memory .X takes). For per-spot analyses: Leiden on cells,
         pathway scores, differential expression of spots."""
         if not self.raw_spots:
             return self.adata
         if self._lognorm is None:
-            self._lognorm = clustering.log_normalized(self.adata.X.copy(), self.adata)
+            self._lognorm = self.log_counts(self.adata.X.copy())
         return self._lognorm
+
+    def log_counts(self, X):
+        """An AnnData of raw counts `X` (rows of this dataset's cells; modified in place)
+        made the way the cells were: normalize_total if chosen, then log1p."""
+        return clustering.log_normalized(X, self.adata, self.hex_filter.normalize)
 
     def match_gene(self, gene: str) -> str | None:
         """Resolves a gene symbol to this dataset's actual var_names spelling,
@@ -328,7 +337,7 @@ class Dataset:
                 else:
                     n = adata.n_obs
                     rows = np.sort(np.random.default_rng(0).choice(n, min(n, _HVG_SAMPLE), replace=False))
-                    adata = clustering.log_normalized(adata.X[rows], adata)
+                    adata = self.log_counts(adata.X[rows])
             hvg = sc.pp.highly_variable_genes(adata, flavor="seurat", inplace=False)
             dispersion = hvg["dispersions_norm"].to_numpy(dtype=float)
             ranked = np.argsort(-np.nan_to_num(dispersion, nan=-np.inf), kind="stable")

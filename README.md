@@ -3,8 +3,7 @@
 An interactive [Panel](https://panel.holoviz.org/) + [Bokeh](https://bokeh.org/) viewer for
 spatial transcriptomics data, built to work with **any** AnnData `.h5ad` file rather than one
 specific dataset. Nothing about the obs schema is hardcoded: after loading a file you choose
-which obs column separates samples/fields-of-view, which fields are offered for coloring, and
-color everything either by an obs field or by gene expression / gene-set (pathway) scores.
+which obs column separates samples/fields-of-view, and color everything either by an obs field or by gene expression / gene-set (pathway) scores.
 
 ## Features
 
@@ -32,12 +31,15 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   the cells currently in view, updating as you pan and zoom.
 - **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
   (with the confidence for suggested cell types), or its values for the genes / pathways shown.
-- **Normalization** - after loading, a checkbox chooses whether to normalize `.X`
-  (`normalize_total` + `log1p`); it's ticked when `.X` looks like raw counts, and the choice
-  is remembered per file. Each cell / spot is normalized for coloring and differential
-  expression, but hexagons (clustering and cell typing on hexagons) **sum their
-  spots' raw counts first**, then get `log1p` as one unit, after `normalize_total` by default
-  (a separate checkbox). Left unticked, `.X` is used as-is and a hexagon holds its spots' mean.
+- **Hexagons for huge samples** - when a sample has more than a million spots, they're too
+  sparse to analyse one by one, so the load page pools them into hexagons (edge length
+  adjustable there): normalizing, clustering and cell typing all work on each hexagon's
+  **summed raw counts**, and every spot gets its hexagon's result. Smaller data is analysed
+  cell by cell.
+- **Normalization** - raw counts always get `log1p`; a checkbox on the load page (off by
+  default) adds `normalize_total` first, per hexagon or per cell. With hexagons, single
+  spots stay raw counts. If `.X` doesn't look like raw counts it's used as-is, and a hexagon
+  holds its spots' mean.
 - **Hexagon filter** - hexagons with too little data are left out of clustering, cell typing
   and differential expression, before normalizing, and drawn gray with their spots
   unlabeled: by default those with under 50% of their sample's median spots per hexagon (a
@@ -46,15 +48,14 @@ color everything either by an obs field or by gene expression / gene-set (pathwa
   The same panel sets how widely a gene must be detected to be picked as variable for PCA and
   Leiden on hexagons (by default in at least 2% of them).
 - **Leiden clustering** - at load time or from the **Leiden clustering & cell types** panel,
-  using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`). By default it
-  clusters **hexagons** (edge length adjustable) and every spot gets its
-  hexagon's cluster - the way to cluster sub-cellular spots (Xenium transcripts, Open-ST,
-  Visium HD...), and much faster on huge samples. Choose **Individual cells** for segmented
-  single-cell data.
+  using scanpy's standard pipeline (HVGs, PCA, neighbors, `sc.tl.leiden`), on the hexagons
+  when the load page pooled spots into them (every spot gets its hexagon's cluster), else on
+  the cells.
 - **Background genes** - mitochondrial (`MT-`), ribosomal-protein (`RPS`/`RPL`) and genes
   detected in almost every cell / hexagon can be left out of clustering, cell typing
   and the "most expressed genes" shown (mitochondrial genes are left out by default).
-- **Cell-type suggestions** - optionally, each Leiden cluster gets a suggested cell type from
+- **Cell-type suggestions** - optionally, each Leiden cluster (or, at load time without
+  Leiden, each hexagon / cell on its own, by its best-scoring type) gets a suggested cell type from
   a marker database's genes - PanglaoDB (default), CellTypist (finer immune subtypes) or
   CancerSEA (cancer cell states: hypoxia, EMT, stemness...). Every cell (or, for a hexagon
   clustering, every hexagon) is scored over all genes with ULM (decoupler's PanglaoDB
@@ -197,23 +198,23 @@ python st_visualizer.py     # or, after installing: spatial-visualizer
    them apart, so you can pick it as the sample column. Matrices Seurat v5 keeps on disk
    (BPCells) can't be read from the `.rds` alone; convert them to a regular sparse matrix in R
    before saving.
-2. Once loaded, pick which obs column separates samples/fields-of-view (leave it as **None**
-   if the file is a single sample; the choice is remembered for next time), choose whether to
-   normalize the expression (see **Normalization** above), optionally point at a `pathways.json` file (defaults to
-   the bundled `viewer/data/pathways.json`), and choose which obs fields should be offered for
-   coloring.
+2. Once loaded, go through the numbered steps: **Samples** (the obs column separating
+   samples / fields of view, or **None**; remembered for next time), **Hexagons** (shown when a
+   sample has more than a million spots: their edge length, and which low-data hexagons to
+   leave out), **Normalize** (whether to `normalize_total` before the `log1p`; off by default),
+   **Leiden clustering** and **Cell types** (both optional, on the hexagons or the cells).
 3. Click **Open viewer**. The **Spatial** tab shows each cell as a hexagon, square or circle (auto-detected)
    (sized so they tile the tissue by default, adjustable with the **Cell size** slider) with per-sample
    navigation and the Field / Gene & Pathway coloring controls described above.
 
-Closing the last browser tab shuts the server down automatically (after a ~30 s grace
-period, so a page reload doesn't).
+Closing the last browser tab shuts the server down automatically (after about 3 s,
+so a page reload doesn't).
 
 ## Data
 
 - `viewer/data/pathways.json` - the gene-set definitions used by the Gene & Pathway view. Each entry
   has a `source`, a `description`, and a list of `genes` (edit or extend freely - the app reads
-  this file at startup; launcher users can instead point the app at their own copy).
+  this file at startup; your own gene sets can be added on the Pathways tab).
 - The bundled Open-ST/RCTD `.h5ad` used during development is **not** included in this
   repository (too large for git) - point the app at your own `.h5ad` file instead.
 
@@ -227,7 +228,7 @@ Start Spatial Visualizer (Mac).command / (Windows).bat   double-click launchers
 viewer/
   cli.py                 starts the server (shared by the script and the installed command)
   app.py                 assembles the landing page and the tabbed main viewer
-  landing.py              landing page: file path, sample/FOV column, field selection
+  landing.py              load page: file, samples, hexagons, normalization, Leiden, cell types
   spatial_page.py          "Spatial" tab
   regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
   regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
@@ -241,7 +242,7 @@ viewer/
   pathways.py                pathways.json + custom pathway loading, score_genes scoring
   clustering.py              normalization check, PCA/neighbors, Leiden (per cell or per hex bin)
   hexbin.py                  hexagonal binning (huge samples, sub-cellular spots), hexagon filter
-  hex_filter_controls.py     hexagon filter and normalization widgets
+  hex_filter_controls.py     hexagon filter widgets
   gene_filter_controls.py    "leave out background genes" widgets
   celltyping.py              marker databases + decoupler cell-type suggestions for clusters
   celltype_controls.py       species / tissue widgets and the suggestions table

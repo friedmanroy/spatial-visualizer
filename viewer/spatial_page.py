@@ -60,10 +60,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     hex_spacing = dataset.sample_lattice(dataset.largest_sample()).spacing
     bin_width = pn.widgets.FloatInput(
         name=hexbin.EDGE_LABEL,
-        # The width the landing page clustered with, if it did (the automatic one unless
-        # changed there, so what's drawn matches what was clustered); else the automatic one.
-        value=hexbin.edge_length(list(dataset.hex_clusterings.values())[-1] if dataset.hex_clusterings
-                                 else dataset.default_hex_factor(), hex_spacing),
+        # The width the load page pooled spots with, if it did (so what's drawn matches what
+        # was clustered and cell-typed); else the automatic one.
+        value=hexbin.edge_length(dataset.analysis_width or dataset.default_hex_factor(), hex_spacing),
         sizing_mode="stretch_width", visible=bin_toggle.value,
         description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_input_range(hex_spacing),
     )
@@ -512,16 +511,13 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     leiden_btn = pn.widgets.Button(name="Run Leiden", button_type="primary", width=110, margin=(23, 5, 5, 5))
     leiden_status = pn.pane.Markdown("", margin=(0, 5))
-    # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
-    # cell-type one by one, so by default hexagonal bins are clustered (each by its
-    # spots' summed, then normalized, counts) and typed, and every spot gets its bin's result.
-    leiden_unit = pn.widgets.RadioButtonGroup(
-        options=[clustering.HEXAGONS, clustering.CELLS], value=clustering.HEXAGONS,
-        button_type="primary", button_style="outline", sizing_mode="stretch_width", margin=(8, 5, 2, 5),
-    )
+    # Samples the load page pooled into hexagons (too sparse to analyse spot by spot) are
+    # clustered and typed on hexagons, each by its spots' summed counts, and every spot gets
+    # its hexagon's result; other data on its cells.
+    hexes = dataset.analysis_width is not None
     leiden_width = pn.widgets.FloatInput(
         name=hexbin.EDGE_LABEL,
-        value=bin_width.value,
+        value=bin_width.value, visible=hexes,
         sizing_mode="stretch_width",
         description=hexbin.EDGE_DESCRIPTION, **hexbin.edge_input_range(hex_spacing),
     )
@@ -530,7 +526,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return hexbin.width_factor(leiden_width.value, hex_spacing)
 
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
-    hex_filter_box = pn.Column(state.hex_filter.layout, sizing_mode="stretch_width", margin=0)
+    hex_filter_box = pn.Column(state.hex_filter.layout, sizing_mode="stretch_width", margin=0, visible=hexes)
     # Before any other watcher: an emptied number box gets its last value back.
     keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
 
@@ -542,8 +538,6 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         bin_width_note.object = width_note(bin_factor())
 
     def update_leiden_target(*events):
-        hexes = leiden_unit.value == clustering.HEXAGONS
-        leiden_width.visible = hex_filter_box.visible = hexes
         same = bin_toggle.value and leiden_width.value == bin_width.value
         leiden_target.object = (
             f"Clusters and cell-types hexagons with {leiden_width.value:g} pts edges "
@@ -557,21 +551,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             f"<br>{width_note(leiden_factor())}" if hexes else "")
 
     def update_hex_filter_info(*events):
-        if leiden_unit.value == clustering.HEXAGONS:
+        if hexes:
             state.hex_filter.show(dataset, sample_select.value, leiden_factor(), dataset.cell_totals())
 
     update_leiden_target()
     update_bin_width_note()
     update_hex_filter_info()
-    leiden_unit.param.watch(update_hex_filter_info, "value")
     leiden_width.param.watch(update_hex_filter_info, "value")
     bin_width.param.watch(update_bin_width_note, "value")
-    for w in (leiden_unit, leiden_width, bin_toggle, bin_width):
+    for w in (leiden_width, bin_toggle, bin_width):
         w.param.watch(update_leiden_target, "value")
 
     async def on_run_leiden(event):
         leiden_status.object = ""
-        hexes = leiden_unit.value == clustering.HEXAGONS
         gene_filter = state.gene_filter.value
         detail = (f"on hexagons with {leiden_width.value:g} pts edges" if hexes
                   else f"on all {dataset.adata.n_obs:,} cells") + (
@@ -665,7 +657,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_btn.on_click(on_run_leiden)
     leiden_card = pn.Card(
-        leiden_unit, leiden_width, leiden_target, hex_filter_box, state.gene_filter.layout, typing.layout,
+        leiden_width, leiden_target, hex_filter_box, state.gene_filter.layout, typing.layout,
         pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
         leiden_status, rerun_row, typing_results,
         title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),

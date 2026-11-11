@@ -15,7 +15,7 @@ import panel as pn
 from bokeh.events import SelectionGeometry
 from bokeh.models import ColumnDataSource, LassoSelectTool, PanTool
 
-from . import clustering, de
+from . import de
 from . import regions as regions_mod
 from .color_controls import HINT_STYLE, _SWATCH_CSS, _SWATCH_SIZE
 from .colors import GRAY_RGBA
@@ -259,7 +259,7 @@ class RegionsPanel:
             cells = np.sort(np.random.default_rng(0).choice(cells, _TOP_GENES_MAX_CELLS, replace=False))
         X = ds.adata.X[cells]
         if ds.raw_spots:  # .X kept as raw counts: normalize just these cells
-            X = clustering.log_normalized(X, ds.adata).X
+            X = ds.log_counts(X).X
         mean = np.asarray(X.mean(axis=0), dtype=float).reshape(1, -1)
         top = top_k_per_row(mean, k, exclude=ds.background_mask())[0]
         return [str(ds.adata.var_names[g]) for g in top if g >= 0]

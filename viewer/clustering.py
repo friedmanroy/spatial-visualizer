@@ -29,8 +29,6 @@ DEFAULT_N_NEIGHBORS = 15
 DEFAULT_LEIDEN_RESOLUTION = 1.0
 #: sparse hexagon profiles are summed this many hexagons at a time
 _PROFILE_CHUNK = 2_000
-#: what clustering runs on (labels of the choice shown in the UI)
-HEXAGONS, CELLS = "Hexagons", "Individual cells"
 #: gene-name prefixes (case-insensitive) of mitochondrial and ribosomal-protein genes
 MITO_PREFIXES = ("MT-", "MT.")
 RIBO_PREFIXES = ("RPS", "RPL", "MRPS", "MRPL")
@@ -103,8 +101,8 @@ def normalize_if_raw(adata) -> bool:
     return True
 
 
-def normalize_keeping_counts(adata):
-    """normalize_total + log1p on .X (whatever it holds), returning a copy of the values
+def normalize_keeping_counts(adata, normalize_total: bool = True):
+    """normalize_total (if `normalize_total`) + log1p on .X (whatever it holds), returning a copy of the values
     from before - kept so hexagonal bins can sum raw counts before normalizing
     (hex_profiles). A full copy: sharing a sparse matrix's index arrays would let an
     in-place sort_indices / eliminate_zeros on either one silently corrupt the other."""
@@ -114,16 +112,18 @@ def normalize_keeping_counts(adata):
         counts = X.copy()
     else:
         counts = np.array(X, copy=True)
-    sc.pp.normalize_total(adata)
+    if normalize_total:
+        sc.pp.normalize_total(adata)
     sc.pp.log1p(adata)
     return counts
 
 
-def log_normalized(X, like) -> ad.AnnData:
+def log_normalized(X, like, normalize_total: bool = True) -> ad.AnnData:
     """A new AnnData holding `X` (raw counts, rows of `like`'s cells; modified in place,
-    so pass a copy) after normalize_total + log1p, with `like`'s genes (var)."""
+    so pass a copy) after normalize_total (if `normalize_total`) + log1p, with `like`'s genes (var)."""
     out = ad.AnnData(X, var=like.var.copy())
-    sc.pp.normalize_total(out)
+    if normalize_total:
+        sc.pp.normalize_total(out)
     sc.pp.log1p(out)
     return out
 

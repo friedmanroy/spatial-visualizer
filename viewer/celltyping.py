@@ -453,7 +453,7 @@ class ClusterCall:
 
 @dataclass
 class CellTypingResult:
-    cluster_col: str
+    cluster_col: str | None  # None: each hexagon / cell typed on its own (annotate_units)
     column: str  # obs column holding each cell's suggested type
     confidence_column: str  # obs column holding each cell's confidence (0-1) in that type
     species: str
@@ -477,39 +477,20 @@ def _cluster_means(X, codes: np.ndarray, n_clusters: int) -> np.ndarray:
     return np.asarray(mean.todense()) if sp.issparse(mean) else np.asarray(mean)
 
 
-def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str,
-                      tissue: str, report=lambda text: None,
-                      gene_filter: clustering.GeneFilter | None = None,
-                      method: str = DEFAULT_METHOD) -> CellTypingResult:
-    """Suggests a cell type per cluster of obs[`cluster_col`] from the (cell type, gene,
-    weight) rows in `net` (see marker_table / net_from_table; weight -1 = negative
-    marker), scored with `method` (see METHODS), stores each cell's suggestion as
-    obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. A clustering of
-    hexagonal bins (dataset.hex_clusterings) is typed on those bins, not on single
-    cells / spots. Genes `gene_filter` counts as background are left out.
-    `tissue` is only a label for the results."""
+def _scoring_input(dataset, width: float | None, hex_filter, net: pd.DataFrame,
+                   gene_filter: clustering.GeneFilter | None, method: str, report):
+    """What cell typing scores: (units x genes AnnData - hexagonal bins `width` cell spacings
+    wide, or the cells themselves if None - with every measured gene log-normalized, less
+    the background genes; [(cell indices, HexBinning)] per sample or None; `net` matched to
+    this data's genes; positive markers measured per type; the types left; their marker genes)."""
     import anndata as ad
-    import decoupler as dc
 
-    adata = dataset.adata
-    clusters = adata.obs[cluster_col].astype("category")
-    names = [str(c) for c in clusters.cat.categories]
-    codes = clusters.cat.codes.to_numpy()
-    sizes = np.bincount(codes[codes >= 0], minlength=len(names))
-    if (sizes > 0).sum() < 2:
-        raise ValueError("Cell typing compares the clusters with each other, so it needs at least 2 "
-                         "clusters - try a higher Leiden resolution.")
-
-    # What gets scored: hexagons for a hexagon clustering, else the cells themselves -
-    # with every measured gene (log-normalized), less the background genes.
-    width = dataset.hex_clusterings.get(cluster_col)
     binnings = None
     if width is not None:
         report(f"{clustering.hex_profile_verb(dataset)} within hexagonal bins ({width:g} cell spacings wide)")
-        units, binnings = clustering.hex_profiles(dataset, width, None, dataset.hex_cluster_filters.get(cluster_col))
-        unit_codes = clustering.cells_to_bins(codes, binnings)
+        units, binnings = clustering.hex_profiles(dataset, width, None, hex_filter)
     else:
-        units, unit_codes = dataset.expression(), codes
+        units = dataset.expression()
     keep = ~clustering.background_genes(units, gene_filter)
     genes = list(np.asarray(units.var_names)[keep])
     scored = ad.AnnData(units.X if keep.all() else units.X[:, np.flatnonzero(keep)],
@@ -538,7 +519,36 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
         )
     types = sorted(net["source"].unique())
     marker_genes = sorted(set(net.loc[net["weight"] > 0, "target"]))
+    return scored, binnings, net, measured, types, marker_genes
 
+
+def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str,
+                      tissue: str, report=lambda text: None,
+                      gene_filter: clustering.GeneFilter | None = None,
+                      method: str = DEFAULT_METHOD) -> CellTypingResult:
+    """Suggests a cell type per cluster of obs[`cluster_col`] from the (cell type, gene,
+    weight) rows in `net` (see marker_table / net_from_table; weight -1 = negative
+    marker), scored with `method` (see METHODS), stores each cell's suggestion as
+    obs[f"{cluster_col}_celltype"], and returns the per-cluster calls. A clustering of
+    hexagonal bins (dataset.hex_clusterings) is typed on those bins, not on single
+    cells / spots. Genes `gene_filter` counts as background are left out.
+    `tissue` is only a label for the results."""
+    import decoupler as dc
+
+    adata = dataset.adata
+    clusters = adata.obs[cluster_col].astype("category")
+    names = [str(c) for c in clusters.cat.categories]
+    codes = clusters.cat.codes.to_numpy()
+    sizes = np.bincount(codes[codes >= 0], minlength=len(names))
+    if (sizes > 0).sum() < 2:
+        raise ValueError("Cell typing compares the clusters with each other, so it needs at least 2 "
+                         "clusters - try a higher Leiden resolution.")
+
+    # What gets scored: hexagons for a hexagon clustering, else the cells themselves.
+    width = dataset.hex_clusterings.get(cluster_col)
+    scored, binnings, net, measured, types, marker_genes = _scoring_input(
+        dataset, width, dataset.hex_cluster_filters.get(cluster_col), net, gene_filter, method, report)
+    unit_codes = codes if binnings is None else clustering.cells_to_bins(codes, binnings)
     unit_word = "hexagons" if width is not None else "cells"
     method_name = {v: k for k, v in METHODS.items()}[method]
     report(f"Scoring {len(types)} cell types in each of the {scored.n_obs:,} {unit_word} ({method_name})")
@@ -602,6 +612,69 @@ def annotate_clusters(dataset, cluster_col: str, net: pd.DataFrame, species: str
     return CellTypingResult(cluster_col, column, confidence_column, species, tissue,
                             len(types), calls, hex_width=width,
                             background="" if gene_filter is None else gene_filter.describe(),
+                            method=method)
+
+
+def unit_column_name(width: float | None) -> str:
+    return "celltype" if width is None else f"celltype_hex{width:g}"
+
+
+def annotate_units(dataset, width: float | None, net: pd.DataFrame, species: str, tissue: str,
+                   report=lambda text: None, gene_filter: clustering.GeneFilter | None = None,
+                   method: str = DEFAULT_METHOD) -> CellTypingResult:
+    """Without a clustering: labels every hexagonal bin (`width` cell spacings wide, the bins
+    dataset.hex_filter analyses) - or every cell, if `width` is None - with its best-scoring
+    type in `net` (Unknown if none scores above 0), and every cell with its bin's label.
+    Scored with `method`, except ORA, which needs clusters' top genes: ULM instead. Stores
+    the labels and confidences as obs columns; `calls` has one entry per type found."""
+    import decoupler as dc
+
+    adata = dataset.adata
+    method = ULM if method == ORA else method
+    scored, binnings, net, measured, types, _ = _scoring_input(
+        dataset, width, dataset.hex_filter, net, gene_filter, method, report)
+    unit_word = "hexagons" if width is not None else "cells"
+    method_name = {v: k for k, v in METHODS.items()}[method]
+    report(f"Scoring {len(types)} cell types in each of the {scored.n_obs:,} {unit_word} ({method_name})")
+    if method == SCORE_GENES:
+        unit_scores = _module_scores(scored, net, types)
+    else:
+        unit_scores = _decoupler_scores(dc.mt.aucell if method == AUCELL else dc.mt.ulm, scored, net)
+
+    report(f"Giving each of the {scored.n_obs:,} {unit_word} its best-scoring type")
+    values = unit_scores[types].to_numpy(dtype=float)
+    scored_rows = ~np.isnan(values).all(axis=1)
+    best = np.full(len(values), -1)
+    best[scored_rows] = np.nanargmax(values[scored_rows], axis=1)
+    best_score = np.where(best >= 0, values[np.arange(len(values)), np.maximum(best, 0)], np.nan)
+    unit_labels = np.array([types[b] if b >= 0 and s > 0 else UNKNOWN if b >= 0 else None
+                            for b, s in zip(best, best_score)], dtype=object)
+    unit_conf = _percentile_confidence(unit_scores, unit_labels)
+
+    if binnings is None:
+        cell_labels, confidence = unit_labels, unit_conf
+    else:
+        cell_labels = clustering.bins_to_cells(unit_labels, binnings, adata.n_obs)
+        confidence = clustering.bins_to_cells(unit_conf, binnings, adata.n_obs, fill=np.nan)
+    column = unit_column_name(width)
+    found = [t for t in types if (unit_labels == t).any()]
+    present = found + ([UNKNOWN] if (unit_labels == UNKNOWN).any() else [])
+    dataset.remove_field(column)
+    adata.obs[column] = pd.Categorical(cell_labels, categories=present)
+    confidence_column = f"{column}_confidence"
+    adata.obs[confidence_column] = confidence
+
+    calls = []
+    for label in present:
+        units = unit_labels == label
+        calls.append(ClusterCall(
+            cluster=label, n_cells=int((cell_labels == label).sum()), label=label,
+            candidates=[] if label == UNKNOWN else [(label, float(np.nanmean(best_score[units])), int(measured[label]))],
+            mean_confidence=float(np.nanmean(unit_conf[units])) if label != UNKNOWN else float("nan"),
+            n_bins=int(units.sum()) if width is not None else None,
+        ))
+    return CellTypingResult(None, column, confidence_column, species, tissue, len(types), calls,
+                            hex_width=width, background="" if gene_filter is None else gene_filter.describe(),
                             method=method)
 
 

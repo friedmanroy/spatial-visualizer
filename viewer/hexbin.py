@@ -38,7 +38,7 @@ class HexFilter:
     """Which hexagons are analysed, and how their summed counts become profiles."""
     min_coverage: float = DEFAULT_MIN_COVERAGE  # fraction of the sample's median spots per hexagon
     min_counts: int = DEFAULT_MIN_COUNTS  # summed counts per hexagon
-    normalize: bool = True  # normalize_total before the log1p, which always applies
+    normalize: bool = False  # normalize_total before the log1p, which always applies
     min_gene_detection: float = DEFAULT_MIN_GENE_DETECTION  # of the analysed hexagons, for variable genes
 
     def keep(self, binning: "HexBinning", totals: np.ndarray | None = None) -> np.ndarray:

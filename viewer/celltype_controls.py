@@ -67,7 +67,7 @@ class CellTypingControls:
                         "being suggested for liver.",
         )
         self.source = pn.widgets.Select(
-            name="Marker sets", options=celltyping.MARKER_SOURCES, value="both",
+            name="Marker sets", options=celltyping.MARKER_SOURCES, value="database",
             sizing_mode="stretch_width",
             description="Your own and edited marker sets are managed on the Cell types tab.",
         )
@@ -83,17 +83,17 @@ class CellTypingControls:
         )
         self.include_common = pn.widgets.Checkbox(
             name="Also consider immune, blood, vessel and connective-tissue cells",
-            value=True, visible=False, margin=(4, 5, 4, 5),
+            value=False, visible=False, margin=(4, 5, 4, 5),
         )
         self.tissue.param.watch(lambda e: self._update_visibility(), "value")
-        self._options = pn.Column(
+        self.options = pn.Column(
             self.database, self.database_info,
             pn.Row(self.species, self.tissue, sizing_mode="stretch_width", margin=0),
             self.species_info, self.include_common, self.source, self.method,
             sizing_mode="stretch_width", margin=(0, 0, 0, 20),
         )
-        self.enabled.param.watch(lambda e: setattr(self._options, "visible", e.new), "value")
-        self.layout = pn.Column(self.enabled, self.hint, self._options, sizing_mode="stretch_width", margin=0)
+        self.enabled.param.watch(lambda e: setattr(self.options, "visible", e.new), "value")
+        self.layout = pn.Column(self.enabled, self.hint, self.options, sizing_mode="stretch_width", margin=0)
         self.database.param.watch(self._on_database, "value")
         self._show_database()
 
@@ -216,12 +216,29 @@ class CellTypingControls:
         dataset.celltype_results[result.column] = result
         return result
 
+    async def annotate_units(self, dataset, width: float | None, gene_filter=None) -> celltyping.CellTypingResult:
+        """Like annotate, without a clustering: types each hexagon `width` cell spacings wide
+        (or each cell, if None) on its own - see celltyping.annotate_units."""
+        await self.ensure_markers()
+        if self._detected is None:
+            self.guess_species(dataset.adata.var_names)
+        net = celltyping.net_from_table(self.marker_table())
+        async with self.busy.show("Suggesting cell types...", self.settings_label):
+            result = await asyncio.to_thread(
+                celltyping.annotate_units, dataset, width, net, self.species.value, self.settings_label,
+                report=self.busy.step, gene_filter=gene_filter, method=self.method.value,
+            )
+        dataset.celltype_results[result.column] = result
+        return result
+
 
 def results_html(result: celltyping.CellTypingResult) -> str:
     """Per-cluster table: suggested type, its score, and the runners-up."""
     hexes = result.hex_width is not None
     unit = "hexagon" if hexes else "cell"
     hovered = "spot - each gets its hexagon's" if hexes else "cell"
+    if result.cluster_col is None:
+        return _units_html(result, unit, hovered)
     rows = []
     for call in sorted(result.calls, key=lambda c: -c.n_cells):
         best = call.candidates[0] if call.candidates else None
@@ -264,4 +281,41 @@ def results_html(result: celltyping.CellTypingResult) -> str:
         "<th style='text-align:right'>Confidence</th></tr>"
         + "".join(rows).replace("<td><b>", "<td style='padding-left:6px'><b>")
         + "</table></div>"
+    )
+
+
+def _units_html(result: celltyping.CellTypingResult, unit: str, hovered: str) -> str:
+    """Per-type table of a typing without clusters (celltyping.annotate_units)."""
+    hexes = result.hex_width is not None
+    rows = []
+    for call in sorted(result.calls, key=lambda c: -c.n_cells):
+        label = html.escape(call.label)
+        if call.label == celltyping.UNKNOWN:
+            label = f'<span style="color:#888">{label}</span>'
+        score = f"{call.candidates[0][1]:.1f}" if call.candidates else ""
+        conf = call.mean_confidence
+        rows.append(
+            f"<tr><td style='padding-left:6px'><b>{label}</b></td><td style='text-align:right'>{call.n_cells:,}</td>"
+            + (f"<td style='text-align:right'>{call.n_bins:,}</td>" if hexes else "")
+            + f"<td style='text-align:right'>{score}</td>"
+            f"<td style='text-align:right'>{'' if conf != conf else f'{conf:.0%}'}</td></tr>"
+        )
+    method = {v: k for k, v in celltyping.METHODS.items()}[result.method].split(" (")[0]
+    return (
+        f"<div style='font-size:12px;margin-bottom:4px'><b>Suggested cell types</b> "
+        f"(<code>{html.escape(result.column)}</code>) - {html.escape(result.tissue)}, "
+        f"{result.n_types_scored} cell types scored"
+        + (f" on hexagons ({result.hex_width:g} cell spacings wide)" if hexes else "")
+        + (f", {html.escape(result.background)}" if result.background and result.background != "all genes" else "")
+        + f". No clustering: each {unit} gets the type it scores highest for ({method}), or "
+        f"<i>Unknown</i> if none scores above 0. Score = the type's mean score in those {unit}s. "
+        f"Confidence = the mean percentile of the {unit}'s score for its type among all {unit}s - also "
+        f"shown when hovering a {hovered}, and as the field <code>{html.escape(result.confidence_column)}</code>.</div>"
+        "<div style='max-height:260px;overflow-y:auto'>"
+        "<table style='font-size:12px;border-collapse:collapse;width:100%'>"
+        "<tr style='text-align:left;border-bottom:1px solid #ddd'><th style='padding-left:6px'>Type</th>"
+        "<th style='text-align:right'>Cells</th>"
+        + ("<th style='text-align:right'>Hexagons</th>" if hexes else "")
+        + "<th style='text-align:right'>Score</th><th style='text-align:right'>Confidence</th></tr>"
+        + "".join(rows) + "</table></div>"
     )

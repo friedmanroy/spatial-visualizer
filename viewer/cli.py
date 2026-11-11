@@ -14,7 +14,12 @@ DEFAULT_PORT = 5006
 #: once the last browser tab is closed, the server waits this long (s) before exiting, so
 #: a page reload (whose new session can start before or after the old one is dropped)
 #: doesn't stop it
-_SHUTDOWN_GRACE_S = 30
+_SHUTDOWN_GRACE_S = 1
+#: a session without a browser connection for this long (ms) is dropped - long enough for a
+#: page that's still loading to connect; with the grace above and the check interval below,
+#: the process exits about 3 s after the last tab closes
+_UNUSED_SESSION_MS = 1500
+_SESSION_CHECK_MS = 500
 
 _lock = threading.Lock()
 _live_sessions = 0
@@ -72,7 +77,8 @@ def main():
         port=_free_port(DEFAULT_PORT),
         title="Spatial Transcriptomics Visualizer",
         show=True,
-        unused_session_lifetime_milliseconds=5000,
+        unused_session_lifetime_milliseconds=_UNUSED_SESSION_MS,
+        check_unused_sessions_milliseconds=_SESSION_CHECK_MS,
     )
 
 

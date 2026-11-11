@@ -1,5 +1,10 @@
-"""Landing page: prompts for the spatial .h5ad path, then (once loaded) which obs
-column splits the data into samples/fields-of-view, before opening the main viewer.
+"""Landing page: loads the spatial .h5ad / .rds, then walks through the steps before the
+main viewer opens - samples, pooling huge samples' spots into hexagons, normalizing,
+optional Leiden clustering and optional cell typing.
+
+Whether spots are pooled into hexagons follows from the data: samples of more than
+hexbin.BINNING_THRESHOLD spots are too sparse to analyse spot by spot. Normalizing,
+clustering and cell typing then all work on the hexagons; otherwise on the cells.
 """
 from __future__ import annotations
 
@@ -13,97 +18,152 @@ import panel as pn
 from . import clustering, hexbin
 from . import pathways as pathways_mod
 from .cache import ColorCache
-from .clustering import CELLS, HEXAGONS
 from .color_controls import HINT_STYLE, keep_filled
 from .file_picker import DATA_FILE_PATTERN, build_path_picker, remember_folder_of
 from .seurat import is_rds
 from .state import Dataset, read_viewer_file
 
-# Shipped inside the package so it's found however the app was installed/launched.
 # First entry of the sample/FOV dropdown: don't split, treat the whole file as one sample.
 NO_SPLIT = "None (single sample / FOV)"
 
+# Shipped inside the package so it's found however the app was installed/launched.
 DEFAULT_PATHWAYS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pathways.json")
+
+
+#: width of each of the load page's two columns of steps
+_COLUMN_WIDTH = 580
+
+
+def _step(title: str, *objects) -> pn.Column:
+    return pn.Column(f"### {title}", *objects, margin=(10, 0, 0, 0), width=_COLUMN_WIDTH)
 
 
 def build_landing(state, on_ready) -> pn.viewable.Viewable:
     busy = state.busy
+    typing = state.celltyping
     path_input, _, path_picker = build_path_picker("Spatial .h5ad or Seurat .rds path", busy=busy,
                                                    file_pattern=DATA_FILE_PATTERN)
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
     status = pn.pane.Markdown("")
+    hint = lambda text="", **kw: pn.pane.HTML(text, styles=HINT_STYLE, width=_COLUMN_WIDTH - 20, margin=(0, 10, 6, 10), **kw)
 
+    # 1. Samples
     sample_col_select = pn.widgets.Select(
         name="Does an obs column separate samples / fields of view? (leave as None if not)",
-        options=[NO_SPLIT],
-    )
-    pathways_input = pn.widgets.TextInput(name="pathways.json path (optional)", value="")
-    normalize_checkbox = pn.widgets.Checkbox(name="Normalize expression (normalize_total + log1p)", value=True)
-    normalize_hint = pn.pane.HTML(
-        "For raw counts. Each cell / spot is normalized for coloring, differential expression and "
-        "per-cell clustering; hexagons sum their spots' <i>raw</i> counts first and are then "
-        f"log1p'd as one unit (normalizing them is a separate choice). Above {hexbin.BINNING_THRESHOLD:,} spots in a sample, only the "
-        "hexagons are normalized - single spots are too sparse, and stay raw counts. "
-        "Uncheck if <code>.X</code> is already normalized - it's then used "
-        "as-is, and hexagons hold their spots' mean.",
-        styles=HINT_STYLE, width=560, margin=(0, 10, 10, 30),
+        options=[NO_SPLIT], width=_COLUMN_WIDTH - 20,
     )
 
-    field_select_all_btn = pn.widgets.Button(name="Select all", width=110)
-    field_deselect_all_btn = pn.widgets.Button(name="Deselect all", width=110)
-    field_checkbox_box = pn.Column(scroll=True, height=220)
-    field_picker = pn.Column(
-        "Which fields should be offered for coloring? (uncheck ones you don't care about)",
-        pn.Row(field_select_all_btn, field_deselect_all_btn),
-        field_checkbox_box,
+    # 2. Hexagons - only for samples too large to analyse spot by spot.
+    unit_info = hint()
+    hex_width = pn.widgets.FloatInput(
+        name=hexbin.EDGE_LABEL, value=None, width=340, description=hexbin.EDGE_DESCRIPTION,
     )
+    keep_filled(hex_width)
+    hex_width_note = hint()
+    hex_filter_card = pn.Card(state.hex_filter.layout, title="Leave out hexagons with too little data",
+                              collapsed=True, width=_COLUMN_WIDTH - 20)
+    hex_box = pn.Column(hex_width, hex_width_note, hex_filter_card, margin=0)
 
-    leiden_checkbox = pn.widgets.Checkbox(
-        name="Run Leiden clustering before opening (adds a coloring field)", value=False,
-    )
+    # 3. Normalize
+    normalize_checkbox = pn.widgets.Checkbox(name="Normalize total counts (normalize_total)", value=False)
+    normalize_hint = hint()
+
+    # 4. Leiden
+    leiden_checkbox = pn.widgets.Checkbox(name="Run Leiden clustering", value=False)
     leiden_resolution = pn.widgets.FloatInput(
-        name="Leiden resolution (higher = more clusters)",
-        value=clustering.DEFAULT_LEIDEN_RESOLUTION, start=0.05, end=10, step=0.1,
-        width=260, visible=False,
+        name="Resolution (higher = more clusters)", value=clustering.DEFAULT_LEIDEN_RESOLUTION,
+        start=0.05, end=10, step=0.1, width=260, visible=False, margin=(5, 10, 5, 30),
     )
-    keep_filled(leiden_resolution)  # the hexagon width below may be emptied: it means automatic
-    # Sub-cellular spots (Xenium transcripts, Open-ST...) are too sparse to cluster or
-    # type one by one, so by default the hexagonal bins are clustered (and typed).
-    leiden_unit = pn.widgets.RadioButtonGroup(
-        name="Cluster", options=[HEXAGONS, CELLS], value=HEXAGONS, button_type="primary",
-        button_style="outline", visible=False,
+    keep_filled(leiden_resolution)
+
+    # 5. Cell types
+    typing_checkbox = pn.widgets.Checkbox(name="Suggest cell types", value=False)
+    typing_hint = hint(visible=False)
+    typing_options = pn.Column(typing.options, visible=False, width=_COLUMN_WIDTH - 20, margin=(0, 0, 0, 10))
+    gene_filter_card = pn.Card(state.gene_filter.layout, title="Genes left out of clustering and cell typing",
+                               collapsed=True, width=_COLUMN_WIDTH - 20, visible=False)
+
+    open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
+    open_status = pn.pane.Markdown("")
+    # Two columns: what the data is (samples, hexagons) on the left, what's done with it on the right.
+    steps = pn.Row(
+        pn.Column(
+            _step("1. Samples", sample_col_select),
+            _step("2. Hexagons", unit_info, hex_box),
+            width=_COLUMN_WIDTH, margin=(0, 40, 0, 0),
+        ),
+        pn.Column(
+            _step("3. Normalize", normalize_checkbox, normalize_hint),
+            _step("4. Leiden clustering", leiden_checkbox, leiden_resolution),
+            _step("5. Cell types", typing_checkbox, typing_hint, typing_options),
+            gene_filter_card,
+            pn.Row(open_btn, margin=(15, 0, 0, 0)), open_status,
+            width=_COLUMN_WIDTH, margin=0,
+        ),
+        visible=False,
     )
-    leiden_unit_hint = pn.pane.HTML(
-        "<b>Hexagons</b>: pools the spots / cells in hexagonal bins (the same bins the "
-        "Spatial tab draws for huge samples), clusters and cell-types those, and gives each "
-        "spot its hexagon's result - use this for sub-cellular data such as Xenium or Open-ST. "
-        "<b>Individual cells</b>: for segmented single-cell data.",
-        styles=HINT_STYLE, width=420, visible=False,
-    )
-    # Filled in with the suggested edge length (about hexbin.DEFAULT_HEXAGONS hexagons over the
-    # largest sample) once the file is loaded and whenever the sample column changes.
-    leiden_width = pn.widgets.FloatInput(
-        name=f"{hexbin.EDGE_LABEL} (empty = automatic)", value=None,
-        placeholder=f"automatic (~{hexbin.DEFAULT_HEXAGONS:,} hexagons)",
-        width=340,
-        description=hexbin.EDGE_DESCRIPTION,
-    )
-    leiden_width_note = pn.pane.HTML("", styles=HINT_STYLE, width=420, margin=(0, 10, 6, 10))
-    leiden_width_box = pn.Column(leiden_width, leiden_width_note, state.hex_filter.layout, visible=False,
-                                 width=420, margin=0)
-    leiden_unit.param.watch(lambda e: setattr(leiden_width_box, "visible", e.new == HEXAGONS), "value")
-    typing = state.celltyping
-    typing_box = pn.Column(state.gene_filter.layout, typing.layout, visible=False, width=420, margin=(0, 0, 0, 20))
+
+    holder = {"dataset": None, "raw": False, "aggregated": False, "extent": (0.0, 0.0), "spacing": 1.0,
+              "width_subject": "The sample"}
+
+    def unit_word(plural: bool = True) -> str:
+        return ("hexagons" if plural else "hexagon") if holder["aggregated"] else ("cells" if plural else "cell")
+
+    def chosen_factor() -> float | None:
+        """The hexagon width asked for, in cell spacings (None if not pooling into hexagons)."""
+        if not holder["aggregated"] or not hex_width.value:
+            return None
+        return hexbin.width_factor(hex_width.value, holder["spacing"])
+
+    def update_texts(*events):
+        """Labels and hints that name what is analysed - hexagons or cells."""
+        ds = holder["dataset"]
+        if ds is None:
+            return
+        units = unit_word()
+        largest = ds.largest_sample_size()
+        where = "the largest sample" if len(ds.sample_ids) > 1 else "the sample"
+        if holder["aggregated"]:
+            unit_info.object = (
+                f"{where.capitalize()} has <b>{largest:,} spots</b> (over {hexbin.BINNING_THRESHOLD:,}): too sparse "
+                "to analyse one by one, so they're pooled into hexagons - each hexagon's summed counts are "
+                "normalized, clustered and cell-typed, and every spot gets its hexagon's result.")
+        else:
+            unit_info.object = (
+                f"{where.capitalize()} has {largest:,} cells (at most {hexbin.BINNING_THRESHOLD:,}): they're "
+                "analysed one by one, no hexagons needed.")
+        hex_box.visible = holder["aggregated"]
+        hex_width_note.object = hexbin.width_note(holder["extent"], holder["spacing"], chosen_factor(),
+                                                  holder["width_subject"])
+        if holder["raw"]:
+            normalize_checkbox.visible = True
+            normalize_checkbox.name = f"Normalize each {unit_word(False)}'s total counts (normalize_total)"
+            normalize_hint.object = (
+                f"Scales every {unit_word(False)} to the same total. Unticked, {units} with more counts look "
+                "more expressed overall. log1p is applied either way."
+                + (" Single spots stay raw counts." if holder["aggregated"] else ""))
+        else:
+            normalize_checkbox.visible = False
+            normalize_hint.object = ("<code>.X</code> doesn't look like raw counts (it has fractional or negative "
+                                     "values) - it's probably normalized already, so it's used as-is.")
+        leiden_checkbox.name = f"Cluster the {units} with Leiden"
+        typing_checkbox.name = ("Suggest a cell type for each cluster" if leiden_checkbox.value
+                                else f"Suggest a cell type for each {unit_word(False)}")
+        typing_hint.object = (
+            "Scores a marker database's genes (with decoupler) and names the best match, or <i>Unknown</i>. "
+            + ("Each cluster is compared with all the others. " if leiden_checkbox.value
+               else f"Without a clustering, each {unit_word(False)} gets the type it scores highest for. ")
+            + "A rough first guess - check it against known markers.")
 
     async def update_hex_filter_info(*events):
-        """Previews the hexagon filter on the largest sample, while hexagons would be clustered."""
+        """Previews the hexagon filter on the largest sample, while pooling into hexagons."""
         ds = holder["dataset"]
-        if ds is None or not leiden_checkbox.value or leiden_unit.value != HEXAGONS:
+        factor = chosen_factor()
+        if ds is None or factor is None:
             return
         largest = ds.largest_sample()
-        factor = leiden_factor() or ds.default_hex_factor()
-        # .X still holds the counts it will be normalized from, when opening.
-        counts = ds.adata.X if normalize_checkbox.value else None
+        # .X still holds the counts hexagons will sum, when opening.
+        counts = ds.adata.X if holder["raw"] else None
 
         def prepare():
             ds.hex_binning(largest, factor)  # the slow part, the first time
@@ -116,41 +176,9 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 totals = await asyncio.to_thread(prepare)
         state.hex_filter.show(ds, largest, factor, totals)
 
-    async def on_leiden_toggle(event):
-        await update_hex_filter_info()
-        leiden_resolution.visible = typing_box.visible = event.new
-        leiden_unit.visible = leiden_unit_hint.visible = event.new
-        leiden_width_box.visible = event.new and leiden_unit.value == HEXAGONS
-        if event.new and typing.enabled.value:
-            try:  # fetch PanglaoDB now (first time only) so the tissue list is filled in
-                await typing.ensure_markers()
-            except Exception as exc:
-                open_status.object = f"**Cell typing unavailable:** {exc}"
-
-    leiden_checkbox.param.watch(on_leiden_toggle, "value")
-
-    open_btn = pn.widgets.Button(name="Open viewer", button_type="success", width=140)
-    open_status = pn.pane.Markdown("")
-    step2 = pn.Column(
-        sample_col_select, pathways_input, normalize_checkbox, normalize_hint, field_picker,
-        leiden_checkbox, leiden_unit, leiden_unit_hint,
-        leiden_width_box, leiden_resolution, typing_box,
-        open_btn, open_status, visible=False,
-    )
-
-    holder = {"dataset": None, "field_checkboxes": {}, "extent": (0.0, 0.0), "spacing": 1.0, "width_subject": "The sample"}
-
-    def leiden_factor() -> float | None:
-        """The hexagon width asked for, in cell spacings (None if automatic)."""
-        return hexbin.width_factor(leiden_width.value, holder["spacing"]) if leiden_width.value else None
-
-    def update_width_note(*events):
-        leiden_width_note.object = hexbin.width_note(holder["extent"], holder["spacing"], leiden_factor(),
-                                                     holder["width_subject"])
-
-    async def suggest_width(*events):
-        """Splits the samples as chosen, measures the largest one's width in spots and
-        fills in the hexagon edge length giving about DEFAULT_HEXAGONS hexagons over it."""
+    async def on_samples_change(*events):
+        """Splits the samples as chosen, decides whether they're pooled into hexagons, and
+        fills in the hexagon edge length giving about DEFAULT_HEXAGONS over the largest one."""
         ds = holder["dataset"]
         if ds is None:
             return
@@ -162,32 +190,38 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
                 ds.set_sample_column(col)
                 largest = ds.largest_sample()
-                return ds.sample_extent(largest), ds.sample_lattice(largest).spacing
+                return ds.largest_sample_size(), ds.sample_extent(largest), ds.sample_lattice(largest).spacing
 
-        holder["extent"], holder["spacing"] = await asyncio.to_thread(measure)
+        size, holder["extent"], holder["spacing"] = await asyncio.to_thread(measure)
+        holder["aggregated"] = size > hexbin.BINNING_THRESHOLD
         holder["width_subject"] = "The largest sample" if len(ds.sample_ids) > 1 else "The sample"
         suggested = hexbin.edge_length(hexbin.default_width_factor(holder["extent"], holder["spacing"]), holder["spacing"])
-        leiden_width.placeholder = f"automatic: {suggested:g}"
-        leiden_width.param.update(value=suggested, **hexbin.edge_input_range(holder["spacing"]))
-        update_width_note()
+        hex_width.param.update(value=suggested, **hexbin.edge_input_range(holder["spacing"]))
+        update_texts()
         await update_hex_filter_info()
 
-    leiden_width.param.watch(update_width_note, "value")
-    leiden_width.param.watch(update_hex_filter_info, "value")
-    leiden_unit.param.watch(update_hex_filter_info, "value")
-    normalize_checkbox.param.watch(update_hex_filter_info, "value")
-    sample_col_select.param.watch(suggest_width, "value")
+    async def on_leiden_toggle(event):
+        leiden_resolution.visible = event.new
+        update_visibility()
 
-    def on_select_all_fields(event):
-        for cb in holder["field_checkboxes"].values():
-            cb.value = True
+    async def on_typing_toggle(event):
+        update_visibility()
+        if event.new:
+            try:  # fetch the marker database now (first time only) so the tissue list is filled in
+                await typing.ensure_markers()
+            except Exception as exc:
+                open_status.object = f"**Cell typing unavailable:** {exc}"
 
-    def on_deselect_all_fields(event):
-        for cb in holder["field_checkboxes"].values():
-            cb.value = False
+    def update_visibility():
+        typing_hint.visible = typing_options.visible = typing_checkbox.value
+        gene_filter_card.visible = leiden_checkbox.value or typing_checkbox.value
+        update_texts()
 
-    field_select_all_btn.on_click(on_select_all_fields)
-    field_deselect_all_btn.on_click(on_deselect_all_fields)
+    sample_col_select.param.watch(on_samples_change, "value")
+    hex_width.param.watch(lambda e: update_texts(), "value")
+    hex_width.param.watch(update_hex_filter_info, "value")
+    leiden_checkbox.param.watch(on_leiden_toggle, "value")
+    typing_checkbox.param.watch(on_typing_toggle, "value")
 
     async def on_load(event):
         path = path_input.value.strip()
@@ -197,7 +231,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         if not os.path.exists(path):
             status.object = f"**File not found:** `{path}`"
             return
-        step2.visible = False
+        steps.visible = False
         status.object = ""
         async with busy.show("Loading file...", path):
             await _load(path)
@@ -218,15 +252,13 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             raw = await asyncio.to_thread(clustering.looks_like_raw_counts, adata)
             ds = Dataset(adata, name=os.path.basename(path))
             ds.color_cache = ColorCache(path)
-            cached_normalize = ds.color_cache.get_normalize()
-            normalize_checkbox.value = raw if cached_normalize is None else cached_normalize
             normalize_checkbox.disabled = False
             typing.guess_species(adata.var_names)
             state.gene_filter.set_genes(adata.var_names)
             remember_folder_of(path)
-            holder["dataset"] = ds
+            holder["dataset"], holder["raw"] = ds, raw
 
-            busy.step(f"Inspecting the {len(adata.obs.columns)} obs columns to offer as fields")
+            busy.step(f"Inspecting the {len(adata.obs.columns)} obs columns")
 
             def _classify_all_columns():
                 for c in adata.obs.columns:
@@ -240,26 +272,11 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 cached_sample_col = ds.color_cache.get_sample_column()
                 sample_col_select.value = cached_sample_col if cached_sample_col in cat_options else NO_SPLIT
 
-                cached_enabled = ds.color_cache.get_enabled_fields()
-                field_checkboxes = {}
-                for f in all_field_options:
-                    value = True if cached_enabled is None else f in cached_enabled
-                    cb = pn.widgets.Checkbox(name=f, value=value)
-                    field_checkboxes[f] = cb
-                holder["field_checkboxes"] = field_checkboxes
-                field_checkbox_box[:] = list(field_checkboxes.values())
-
-            pathways_input.value = DEFAULT_PATHWAYS_PATH if os.path.exists(DEFAULT_PATHWAYS_PATH) else ""
             busy.step("Measuring the samples' spot spacing (for the suggested hexagon width)")
-            await suggest_width()
+            await on_samples_change()
 
-            status.object = (
-                f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`. "
-                + ("`.X` looks like raw counts." if raw else
-                   "`.X` doesn't look like raw counts (it has fractional or negative values) - "
-                   "it's probably normalized already.")
-            )
-            step2.visible = True
+            status.object = f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`."
+            steps.visible = True
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to load:** {exc}"
@@ -268,43 +285,41 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         ds = holder["dataset"]
         if ds is None:
             return
-        # Set first: normalizing depends on the samples' sizes, and hexagon-level
-        # clustering bins each sample separately.
+        open_status.object = ""
+        # Set first: normalizing and the hexagons both depend on the samples.
         sample_col = None if sample_col_select.value == NO_SPLIT else sample_col_select.value
         ds.set_sample_column(sample_col)
+        ds.analysis_width = chosen_factor()
+        state.hex_filter.normalize = holder["raw"] and normalize_checkbox.value
         ds.hex_filter = state.hex_filter.value
         # Before anything reads the expression; only once, should opening be retried.
-        if normalize_checkbox.value and ds.counts is None:
-            if ds.largest_sample_size() > hexbin.BINNING_THRESHOLD:
-                # Spots this many are drawn as hexagons, and are too sparse to normalize
-                # one by one: they stay raw counts, and only hexagon pools get normalized.
+        if holder["raw"] and ds.counts is None:
+            if ds.analysis_width is not None:
+                # Spots this many are too sparse to normalize one by one: they stay raw
+                # counts, and hexagons sum them before normalizing.
                 ds.counts = ds.adata.X
             else:
-                async with busy.show("Normalizing...", f"{ds.adata.n_obs:,} cells, normalize_total + log1p"):
-                    ds.counts = await asyncio.to_thread(clustering.normalize_keeping_counts, ds.adata)
+                what = "normalize_total + log1p" if ds.hex_filter.normalize else "log1p"
+                async with busy.show("Normalizing...", f"{ds.adata.n_obs:,} cells, {what}"):
+                    ds.counts = await asyncio.to_thread(clustering.normalize_keeping_counts, ds.adata,
+                                                        ds.hex_filter.normalize)
                 ds.normalized_spots = True
         normalize_checkbox.disabled = ds.counts is not None
-        if ds.color_cache is not None:
-            ds.color_cache.set_normalize(normalize_checkbox.value)
+        gene_filter = state.gene_filter.value
+        cluster_col = None
         if leiden_checkbox.value:
-            open_status.object = ""
-            # The automatic width is the one the Spatial tab draws huge samples with.
-            on_hexbins = leiden_unit.value == HEXAGONS
-            spacing = ds.sample_lattice(ds.largest_sample()).spacing
-            width = hexbin.width_factor(leiden_width.value, spacing) if leiden_width.value else ds.default_hex_factor()
-            gene_filter = state.gene_filter.value
-            detail = ((f"on hexagons with {hexbin.edge_length(width, spacing):g} pts edges over the " if on_hexbins else "on all ")
-                      + f"{ds.adata.n_obs:,} cells, "
-                      + gene_filter.describe())
+            hexes = ds.analysis_width is not None
+            detail = ((f"on hexagons with {hex_width.value:g} pts edges over the " if hexes else "on all ")
+                      + f"{ds.adata.n_obs:,} cells, " + gene_filter.describe())
             try:
                 async with busy.show("Running Leiden clustering...", detail):
-                    if on_hexbins:
-                        col, _ = await asyncio.to_thread(
-                            clustering.run_leiden_on_hexbins, ds, width,
+                    if hexes:
+                        cluster_col, _ = await asyncio.to_thread(
+                            clustering.run_leiden_on_hexbins, ds, ds.analysis_width,
                             leiden_resolution.value, report=busy.step, gene_filter=gene_filter,
                         )
                     else:
-                        col = await asyncio.to_thread(
+                        cluster_col = await asyncio.to_thread(
                             clustering.run_leiden, ds, leiden_resolution.value, report=busy.step,
                             gene_filter=gene_filter,
                         )
@@ -312,26 +327,21 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 traceback.print_exc(file=sys.stderr)
                 open_status.object = f"**Leiden clustering failed:** {exc}"
                 return
-            new_fields = [col]
-            open_status.object = f"Added **{col}** ({ds.adata.obs[col].nunique()} clusters) to obs."
-            if typing.enabled.value:
-                try:
-                    result = await typing.annotate(ds, col, gene_filter)
-                    new_fields += [result.column, result.confidence_column]
-                except Exception as exc:  # the clustering itself still worked - carry on
-                    traceback.print_exc(file=sys.stderr)
-                    open_status.object += f" **Cell typing failed:** {exc}"
-            for f in new_fields:  # always offered for coloring, even if not checked above
-                ds.add_field(f)
-                holder["field_checkboxes"].setdefault(f, pn.widgets.Checkbox(name=f, value=True)).value = True
-        field_checkboxes = holder["field_checkboxes"]
-        enabled = {f for f, cb in field_checkboxes.items() if cb.value}
-        ds.allowed_fields = enabled if enabled != set(field_checkboxes) else None
+            ds.add_field(cluster_col)
+        if typing_checkbox.value:
+            try:
+                result = (await typing.annotate(ds, cluster_col, gene_filter) if cluster_col is not None
+                          else await typing.annotate_units(ds, ds.analysis_width, gene_filter))
+                ds.add_field(result.column)
+                ds.add_field(result.confidence_column)
+            except Exception as exc:
+                traceback.print_exc(file=sys.stderr)
+                open_status.object = f"**Cell typing failed:** {exc}"
+                return
         if ds.color_cache is not None:
-            ds.color_cache.set_enabled_fields(sorted(enabled))
             ds.color_cache.set_sample_column(sample_col)
         state.spatial = ds
-        state.pathways_path = pathways_input.value.strip()
+        state.pathways_path = DEFAULT_PATHWAYS_PATH if os.path.exists(DEFAULT_PATHWAYS_PATH) else ""
         state.pathways = pathways_mod.load_pathways(state.pathways_path)
         async with busy.show("Opening the viewer...", f"{ds.adata.n_obs:,} cells in {len(ds.sample_ids)} sample(s)"):
             await busy.step_now("Measuring each sample's cell layout and drawing the first sample")
@@ -343,12 +353,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     return pn.Column(
         "# Spatial Transcriptomics Visualizer",
         "Enter the path to an AnnData `.h5ad` file with spatial coordinates in "
-        "`adata.obsm['spatial']`, or a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`. "
-        "No other obs columns are assumed - you'll pick what to "
-        "use for samples/fields-of-view and coloring after loading.",
-        path_picker,
-        load_btn,
-        status,
-        step2,
-        width=680,
+        "`adata.obsm['spatial']`, or a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`.",
+        pn.Column(path_picker, load_btn, status, width=680, margin=0),
+        steps,
     )

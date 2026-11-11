@@ -61,27 +61,12 @@ class ColorCache:
         self.data.setdefault("fields", {}).setdefault(field, {})[category] = color
         self._save()
 
-    def get_enabled_fields(self) -> list[str] | None:
-        return self.data.get("enabled_fields")
-
-    def set_enabled_fields(self, fields: list[str]):
-        self.data["enabled_fields"] = sorted(fields)
-        self._save()
-
     def get_sample_column(self) -> str | None:
         """The obs column last used to split samples/FOVs, or None (no split / never set)."""
         return self.data.get("sample_column")
 
     def set_sample_column(self, column: str | None):
         self.data["sample_column"] = column
-        self._save()
-
-    def get_normalize(self) -> bool | None:
-        """Whether the user last chose to normalize this file (None: never chose)."""
-        return self.data.get("normalize")
-
-    def set_normalize(self, normalize: bool):
-        self.data["normalize"] = normalize
         self._save()
 
     def get_regions(self) -> list[dict]:
