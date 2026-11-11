@@ -121,9 +121,23 @@ which obs column separates samples/fields-of-view, and color everything either b
   every obs column including Leiden clusterings, suggested cell types and principal
   components, each pathway's score as `pathway_<name>` (scored as the plot shows it - per
   spot, or on its hexagon when spots are pooled), the drawn regions as a `regions` column,
-  and the categories' colors in `uns`.
+  and the categories' colors in `uns`. Samples aligned on the **Align image** tab are saved
+  in their aligned coordinates (see below).
+- **Align image** - for files whose tissue image doesn't line up with the cells. Pick a sample
+  and an image; the cells are drawn as hexagons colored by total counts (or spots per hexagon,
+  or a gene) over the image, starting at its center, with an opacity slider to see through
+  them. The image only turns in 90° steps or mirrors; the cells are moved instead - drag to
+  move them, or to rotate and scale them around their center, or type the center, scale and
+  angle. **Landmarks** are faster: click a spot on the cells, then the same spot on the image;
+  1 pair shifts the cells onto it, 2 or more also scale and rotate them (least squares), with
+  the average distance left shown, and from 3 pairs on a mirrored image is detected and a
+  fix offered. **Apply** rewrites the sample's `obsm['spatial']` in the stored image's frame,
+  so the image lines up "As stored" here and in scanpy / squidpy; the original coordinates
+  stay in `obsm['spatial_original']` and the transform in `uns['spatial_alignment']`, and it
+  can be undone. Align before drawing regions: aligning a sample with drawn regions removes
+  them (after a confirming click), since their outlines no longer match the cells.
 - **Persistent choices** - custom category colors, which fields are enabled, the
-  sample/FOV column and the drawn regions are cached to
+  sample/FOV column, image alignments and the drawn regions are cached to
   `cache/` inside the app's folder (gitignored) and reloaded automatically the next time you open the same file.
 - **Native file browser** - "Browse..." opens the OS's own file picker.
 - **Loading overlay** - long steps (loading, clustering, cell typing...) gray out the page with a
@@ -252,6 +266,8 @@ viewer/
   prepool.py              pooling samples over 30M spots into ~2M hexagons while the file is read
   h5ad_export.py          "Save .h5ad…": the data plus everything the viewer added
   spatial_page.py          "Spatial" tab
+  alignment_page.py        "Align image" tab: move a sample's cells onto its tissue image
+  alignment.py             the transforms behind it, and applying / undoing / restoring them
   regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
   regions_panel.py         "Regions & differential expression" panel + region outlines on the plot
   de.py                    differential expression between regions (scanpy rank_genes_groups)

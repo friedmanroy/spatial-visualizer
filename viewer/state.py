@@ -33,7 +33,7 @@ _HVG_SAMPLE = 100_000
 #: gene sets' per-bin scores kept (each a float per bin of one sample)
 _GENE_SET_CACHE_SIZE = 64
 #: the obsm entries the viewer reads; loading leaves the others out of memory
-_OBSM_USED = ("spatial",)
+_OBSM_USED = ("spatial", "spatial_original")
 
 
 def read_viewer_file(path: str):
@@ -515,3 +515,7 @@ class AppState:
         # async (cluster_col) -> None: cell-types a clustering of the spatial data and
         # shows the result (set by the Spatial tab, used by the Cell types tab).
         self.run_celltyping = None
+        # The Spatial tab's drawn regions (regions.Regions), for the Align image tab.
+        self.regions = None
+        # Called with a sample's id after the Align image tab moved its cells (or put them back).
+        self.alignment_listeners: list = []

@@ -126,6 +126,14 @@ class Regions:
         self.items = [r for r in self.items if r.name != name]
         self._changed()
 
+    def remove_sample(self, sample: str) -> int:
+        """Removes the regions drawn on `sample`; returns how many there were."""
+        n = len(self.in_sample(sample))
+        if n:
+            self.items = [r for r in self.items if r.sample != sample]
+            self._changed()
+        return n
+
     def clear(self):
         self.items = []
         self._next_number = 1

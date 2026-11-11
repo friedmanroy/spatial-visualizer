@@ -12,7 +12,9 @@ suggested cell types and their confidence, principal components) - plus every pa
 score as `pathway_<name>` and, if regions were drawn, which region each spot is in. A
 pathway is scored the way the plot shows it: on each spot, or, when spots were pooled into
 hexagons for analysis, on their hexagon's pooled profile. Categorical columns get their
-colors in uns (`<column>_colors`, as scanpy keeps them).
+colors in uns (`<column>_colors`, as scanpy keeps them). Samples aligned to an image are
+saved in their aligned coordinates, with the originals in obsm['spatial_original'] and the
+transforms in uns['spatial_alignment'] (alignment.py).
 """
 from __future__ import annotations
 

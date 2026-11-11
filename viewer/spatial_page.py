@@ -14,7 +14,7 @@ import panel as pn
 from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
-from . import clustering, figure_export, hexbin, hover, spatial_plot
+from . import alignment, clustering, figure_export, hexbin, hover, spatial_plot
 from .state import top_k_per_row
 from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
@@ -213,6 +213,15 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     bg_select.param.watch(update_bg_image, "value")
     bg_orientation.param.watch(update_bg_image, "value")
+
+    def show_aligned_image(sample_id: str):
+        """A sample aligned on the Align image tab is shown on its image, as stored."""
+        rec = alignment.records(dataset).get(sample_id)
+        if rec is not None and rec[0] in bg_images:
+            bg_orientation.value = "As stored"
+            bg_select.value = rec[0]
+
+    show_aligned_image(initial_sample)
 
     # Lets a background image show through the (otherwise solid, densely packed) cells.
     cell_opacity = pn.widgets.FloatSlider(
@@ -479,6 +488,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         add_field=lambda col: add_and_announce_field(col, select=True), color_by_genes=color_by_genes,
         get_hex_width=lambda: bin_factor() if bin_toggle.value else None,
     )
+    state.regions = regions_panel.regions
     dataset.gene_filter = state.gene_filter.value  # before the gene suggestions are filled in
     controls.refresh_for_dataset()
     state.pathway_listeners.append(controls.refresh_pathway_options)
@@ -694,6 +704,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 update_hex_filter_info()
                 controls.update_category_counts()
                 regions_panel.refresh()
+                show_aligned_image(event.new)
                 redraw_full(event.new)
 
     def on_prev(event):
@@ -707,6 +718,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             sample_select.value = dataset.sample_ids[i + 1]
 
     sample_select.param.watch(on_sample_change, "value")
+
+    def on_alignment(sample_id: str):
+        """The Align image tab moved the sample's cells (or put them back)."""
+        geom_cache.pop(sample_id, None)
+        if sample_id != sample_select.value:
+            return
+        with pn.io.hold():
+            update_bin_width_note()
+            update_hex_filter_info()
+            show_aligned_image(sample_id)
+            redraw_full(sample_id)
+
+    state.alignment_listeners.append(on_alignment)
 
     async def on_binning_change(event):
         bin_width.visible = bin_width_note.visible = detail_toggle.visible = detail_max.visible = bin_toggle.value

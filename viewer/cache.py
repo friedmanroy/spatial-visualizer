@@ -77,6 +77,14 @@ class ColorCache:
         self.data["regions"] = regions
         self._save()
 
+    def get_alignments(self) -> dict:
+        """Samples aligned to an image on the Align image tab (see alignment._set_records)."""
+        return self.data.get("alignments", {})
+
+    def set_alignments(self, alignments: dict):
+        self.data["alignments"] = alignments
+        self._save()
+
     def _save(self):
         write_json_atomic(self.path, self.data)
 
