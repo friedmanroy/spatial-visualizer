@@ -37,6 +37,13 @@ which obs column separates samples/fields-of-view, and color everything either b
   adjustable there): normalizing, clustering and cell typing all work on each hexagon's
   **summed raw counts**, and every spot gets its hexagon's result. Smaller data is analysed
   cell by cell.
+- **Samples too big for memory** - when a file has a sample of more than 30 million spots,
+  a step before the others offers (ticked by default) pooling each sample into about 2
+  million hexagons as the file is read: `.X` is read in chunks of rows, each added into its
+  hexagons, so the spots' expression is never all in memory. The hexagons then stand in for
+  the spots everywhere: summed counts (their mean if `.X` isn't raw counts), the most common
+  value of categorical obs columns, the mean of continuous ones, and `n_spots`. Seurat `.rds`
+  and old-layout `.h5ad` files can't be read in pieces, so they're read whole first.
 - **Normalization** - raw counts always get `log1p`; a checkbox on the load page (off by
   default) adds `normalize_total` first, per hexagon or per cell. With hexagons, single
   spots stay raw counts. If `.X` doesn't look like raw counts it's used as-is, and a hexagon
@@ -235,6 +242,7 @@ viewer/
   cli.py                 starts the server (shared by the script and the installed command)
   app.py                 assembles the landing page and the tabbed main viewer
   landing.py              load page: file, samples, hexagons, normalization, Leiden, cell types
+  prepool.py              pooling samples over 30M spots into ~2M hexagons while the file is read
   spatial_page.py          "Spatial" tab
   regions.py               lasso-drawn regions: polygons -> cells, saved per dataset
   regions_panel.py         "Regions & differential expression" panel + region outlines on the plot

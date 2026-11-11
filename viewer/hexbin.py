@@ -170,6 +170,17 @@ def width_note(extent: tuple[float, float], spacing: float, factor: float | None
 
 def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:
     """Assigns every cell to the pointy-top hexagon (flat-to-flat `width`) containing it."""
+    cell_bin, counts, centers = hex_cells(coords, width)
+    mean_matrix = sp.csr_matrix(
+        (1.0 / counts[cell_bin], (cell_bin, np.arange(len(cell_bin)))),
+        shape=(len(counts), len(cell_bin)),
+    )
+    return HexBinning(centers, cell_bin, counts, width, mean_matrix)
+
+
+def hex_cells(coords: np.ndarray, width: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(each cell's hexagon, the number of cells in each, their centers) - the pointy-top
+    hexagons (flat-to-flat `width`) holding at least one cell."""
     size = width / np.sqrt(3)  # circumradius
     x, y = coords[:, 0].astype(float, copy=False), coords[:, 1].astype(float, copy=False)
     # Fractional axial coordinates, then cube rounding to the nearest hexagon.
@@ -197,8 +208,4 @@ def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:
         size * np.sqrt(3) * (unique_q + unique_r / 2),
         size * 1.5 * unique_r,
     ], axis=1)
-    mean_matrix = sp.csr_matrix(
-        (1.0 / counts[cell_bin], (cell_bin, np.arange(len(cell_bin)))),
-        shape=(len(keys), len(cell_bin)),
-    )
-    return HexBinning(centers, cell_bin, counts, width, mean_matrix)
+    return cell_bin, counts, centers

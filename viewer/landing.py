@@ -5,6 +5,10 @@ optional Leiden clustering and optional cell typing.
 Whether spots are pooled into hexagons follows from the data: samples of more than
 hexbin.BINNING_THRESHOLD spots are too sparse to analyse spot by spot. Normalizing,
 clustering and cell typing then all work on the hexagons; otherwise on the cells.
+
+Files with samples of more than prepool.PREPOOL_THRESHOLD spots are too big to hold in
+memory: a step before the others offers pooling each sample into about
+prepool.PREPOOL_HEXAGONS hexagons while the file is read, which then stand in for its spots.
 """
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ import traceback
 
 import panel as pn
 
-from . import clustering, hexbin
+from . import clustering, hexbin, prepool
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .color_controls import HINT_STYLE, keep_filled
@@ -46,6 +50,21 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     load_btn = pn.widgets.Button(name="Load", button_type="primary", width=100)
     status = pn.pane.Markdown("")
     hint = lambda text="", **kw: pn.pane.HTML(text, styles=HINT_STYLE, width=_COLUMN_WIDTH - 20, margin=(0, 10, 6, 10), **kw)
+
+    # Before the steps, for huge files only: pool each sample's spots into hexagons as .X is read.
+    pool_sample_select = pn.widgets.Select(
+        name="Does an obs column separate samples / fields of view? (leave as None if not)",
+        options=[NO_SPLIT], width=_COLUMN_WIDTH - 20,
+    )
+    pool_checkbox = pn.widgets.Checkbox(
+        name=f"Pool each sample into about {prepool.PREPOOL_HEXAGONS:,} hexagons (recommended)", value=True,
+    )
+    pool_hint = hint()
+    pool_btn = pn.widgets.Button(name="Continue", button_type="primary", width=120)
+    pool_step = pn.Column(
+        _step("Huge samples", pool_hint, pool_sample_select, pool_checkbox),
+        pn.Row(pool_btn, margin=(10, 0, 0, 0)), visible=False,
+    )
 
     # 1. Samples
     sample_col_select = pn.widgets.Select(
@@ -104,7 +123,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     )
 
     holder = {"dataset": None, "raw": False, "aggregated": False, "extent": (0.0, 0.0), "spacing": 1.0,
-              "width_subject": "The sample"}
+              "width_subject": "The sample", "header": None}
 
     def unit_word(plural: bool = True) -> str:
         return ("hexagons" if plural else "hexagon") if holder["aggregated"] else ("cells" if plural else "cell")
@@ -231,55 +250,140 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         if not os.path.exists(path):
             status.object = f"**File not found:** `{path}`"
             return
-        steps.visible = False
+        steps.visible = pool_step.visible = False
+        holder["header"] = None
         status.object = ""
         async with busy.show("Loading file...", path):
             await _load(path)
 
+    def no_coordinates(path: str, adata) -> bool:
+        if "spatial" in adata.obsm:
+            return False
+        status.object = (
+            "**No spatial coordinates found in this Seurat object** - none of its images has "
+            "any, and meta.data has no x / y columns. Pick a different file."
+            if is_rds(path) else
+            "**This file has no `adata.obsm['spatial']`** - it doesn't look like "
+            "spatial data. Pick a different file."
+        )
+        return True
+
     async def _load(path: str):
         try:
+            n_spots = prepool.count_spots(path)
+            if n_spots is not None and n_spots > prepool.PREPOOL_THRESHOLD:
+                busy.step(f"Reading everything but the expression of the {n_spots:,} spots")
+                header = await asyncio.to_thread(prepool.read_header, path)
+                if not no_coordinates(path, header.adata):
+                    await offer_pooling(header)
+                return
             busy.step("Reading the Seurat .rds file" if is_rds(path) else "Reading the .h5ad file")
             adata = await asyncio.to_thread(read_viewer_file, path)
-            if "spatial" not in adata.obsm:
-                status.object = (
-                    "**No spatial coordinates found in this Seurat object** - none of its images has "
-                    "any, and meta.data has no x / y columns. Pick a different file."
-                    if is_rds(path) else
-                    "**This file has no `adata.obsm['spatial']`** - it doesn't look like "
-                    "spatial data. Pick a different file."
-                )
+            if no_coordinates(path, adata):
                 return
             raw = await asyncio.to_thread(clustering.looks_like_raw_counts, adata)
-            ds = Dataset(adata, name=os.path.basename(path))
-            ds.color_cache = ColorCache(path)
-            normalize_checkbox.disabled = False
-            typing.guess_species(adata.var_names)
-            state.gene_filter.set_genes(adata.var_names)
-            remember_folder_of(path)
-            holder["dataset"], holder["raw"] = ds, raw
-
-            busy.step(f"Inspecting the {len(adata.obs.columns)} obs columns")
-
-            def _classify_all_columns():
-                for c in adata.obs.columns:
-                    ds.classify(c)  # warms the cache so field_options()/is-categorical checks below are cheap
-                return ds.field_options()
-
-            all_field_options = await asyncio.to_thread(_classify_all_columns)
-            cat_options = [c for c in all_field_options if ds.classify(c).kind == "categorical"]
-            with pn.io.hold():
-                sample_col_select.options = [NO_SPLIT] + cat_options
-                cached_sample_col = ds.color_cache.get_sample_column()
-                sample_col_select.value = cached_sample_col if cached_sample_col in cat_options else NO_SPLIT
-
-            busy.step("Measuring the samples' spot spacing (for the suggested hexagon width)")
-            await on_samples_change()
-
-            status.object = f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`."
-            steps.visible = True
+            if adata.n_obs > prepool.PREPOOL_THRESHOLD:  # couldn't be told before reading it all
+                await offer_pooling(prepool.FileHeader(path, adata, raw, whole=True))
+                return
+            await open_data(path, adata, raw)
         except Exception as exc:  # surface the error in the UI rather than crashing the app
             traceback.print_exc(file=sys.stderr)
             status.object = f"**Failed to load:** {exc}"
+
+    async def offer_pooling(header: prepool.FileHeader):
+        """Shows the pooling step for a file of more than PREPOOL_THRESHOLD spots."""
+        light = header.adata
+        busy.step(f"Inspecting the {len(light.obs.columns)} obs columns")
+
+        def categorical_columns():
+            ds = Dataset(light)
+            return [c for c in ds.field_options() if ds.classify(c).kind == "categorical"]
+
+        cat_options = await asyncio.to_thread(categorical_columns)
+        cached = ColorCache(header.path).get_sample_column()
+        with pn.io.hold():
+            pool_sample_select.options = [NO_SPLIT] + cat_options
+            pool_sample_select.value = cached if cached in cat_options else NO_SPLIT
+        holder["header"] = header
+        update_pool_hint()
+        status.object = (f"**{light.n_obs:,} spots x {light.n_vars:,} genes** in `{header.path}` - "
+                         + ("read whole, as this file can't be read piece by piece." if header.whole
+                            else "too many to hold in memory, so the expression isn't read yet."))
+        pool_step.visible = True
+
+    def update_pool_hint(*events):
+        header = holder["header"]
+        if header is None:
+            return
+        col = None if pool_sample_select.value == NO_SPLIT else pool_sample_select.value
+        obs = header.adata.obs
+        largest = int(obs[col].value_counts().max()) if col is not None else header.adata.n_obs
+        huge = largest > prepool.PREPOOL_THRESHOLD
+        pool_checkbox.visible = huge
+        where = "The largest sample" if col is not None else "The sample"
+        pool_hint.object = (
+            f"{where} has <b>{largest:,} spots</b> (over {prepool.PREPOOL_THRESHOLD:,}), too many for the "
+            f"viewer. Pooling sums each hexagon's spots' counts as the file is read, and the hexagons then "
+            f"stand in for the spots everywhere - the spots themselves aren't kept."
+            if huge else
+            f"{where} has {largest:,} spots (at most {prepool.PREPOOL_THRESHOLD:,}): no pooling needed, "
+            f"the whole file will be read.")
+
+    async def on_pool_continue(event):
+        header = holder["header"]
+        if header is None:
+            return
+        col = None if pool_sample_select.value == NO_SPLIT else pool_sample_select.value
+        path, n_spots, pooled_from = header.path, header.adata.n_obs, None
+        try:
+            async with busy.show("Preparing the data...", path):
+                if pool_checkbox.visible and pool_checkbox.value:
+                    adata = await asyncio.to_thread(prepool.pool, header, col, report=busy.step)
+                    pooled_from = n_spots
+                elif header.whole:
+                    adata = header.adata
+                else:
+                    busy.step("Reading the .h5ad file")
+                    adata = await asyncio.to_thread(read_viewer_file, path)
+                holder["header"] = None
+                pool_step.visible = False
+                await open_data(path, adata, header.raw, sample_col=col, pooled_from=pooled_from)
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            status.object = f"**Failed to load:** {exc}"
+
+    async def open_data(path: str, adata, raw: bool, sample_col: str | None = None, pooled_from: int | None = None):
+        """Sets up the steps for the loaded data (`sample_col`: the sample column already
+        chosen on the pooling step, else the one remembered for the file; `pooled_from`: how
+        many spots its hexagons were pooled from, if they were)."""
+        ds = Dataset(adata, name=os.path.basename(path))
+        ds.color_cache = ColorCache(path)
+        normalize_checkbox.disabled = False
+        typing.guess_species(adata.var_names)
+        state.gene_filter.set_genes(adata.var_names)
+        remember_folder_of(path)
+        holder["dataset"], holder["raw"] = ds, raw
+
+        busy.step(f"Inspecting the {len(adata.obs.columns)} obs columns")
+
+        def _classify_all_columns():
+            for c in adata.obs.columns:
+                ds.classify(c)  # warms the cache so field_options()/is-categorical checks below are cheap
+            return ds.field_options()
+
+        all_field_options = await asyncio.to_thread(_classify_all_columns)
+        cat_options = [c for c in all_field_options if ds.classify(c).kind == "categorical"]
+        with pn.io.hold():
+            sample_col_select.options = [NO_SPLIT] + cat_options
+            chosen = sample_col if sample_col is not None else ds.color_cache.get_sample_column()
+            sample_col_select.value = chosen if chosen in cat_options else NO_SPLIT
+
+        busy.step("Measuring the samples' spot spacing (for the suggested hexagon width)")
+        await on_samples_change()
+
+        status.object = (f"Loaded **{adata.n_obs:,} cells x {adata.n_vars:,} genes** from `{path}`"
+                         + (f" - hexagons pooled from {pooled_from:,} spots." if pooled_from else "."))
+        steps.visible = True
 
     async def on_open(event):
         ds = holder["dataset"]
@@ -358,6 +462,8 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
             on_ready()
 
     load_btn.on_click(on_load)
+    pool_sample_select.param.watch(update_pool_hint, "value")
+    pool_btn.on_click(on_pool_continue)
     open_btn.on_click(on_open)
 
     return pn.Column(
@@ -365,5 +471,6 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         "Enter the path to an AnnData `.h5ad` file with spatial coordinates in "
         "`adata.obsm['spatial']`, or a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`.",
         pn.Column(path_picker, load_btn, status, width=680, margin=0),
+        pool_step,
         steps,
     )
