@@ -9,8 +9,10 @@ browser, which moves the hexagons it already has: nothing is sent until the drag
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
+import os
 
 import numpy as np
 import panel as pn
@@ -18,9 +20,11 @@ from bokeh.events import Pan, PanEnd, PanStart, Tap
 from bokeh.models import ColumnDataSource, CustomJS, PanTool, WheelZoomTool
 from bokeh.palettes import Viridis256
 
-from . import alignment, hexbin, spatial_plot
+from . import alignment, hexbin, spatial_plot, tissue_image
 from .color_controls import HINT_STYLE
 from .colors import GRAY_RGBA, pack_rgb
+from .file_picker import build_path_picker, remember_folder_of
+from .version import print_exception
 
 #: drag modes: radio label -> what a drag on the plot does (the JS reads the value)
 _MODES = {
@@ -40,22 +44,93 @@ _MIRROR_GAIN = 2.0
 _COLOR_PERCENTILES = (1, 99)
 #: hexagonal binnings kept, so going back to a size or sample doesn't bin again
 _BINNINGS_KEPT = 4
-_DATA_COLOR, _IMAGE_COLOR = "#ff7f0e", "#17becf"
+#: a click this close (screen px) to a landmark deletes its pair
+_LANDMARK_HIT_PX = 10
+#: the rotate / scale dial's radius at scale 1, as a fraction of the cells' short side
+_DIAL_RADIUS = 0.3
+_DATA_COLOR, _IMAGE_COLOR ="#ff7f0e", "#17becf"
 _VIRIDIS = np.array([[int(c[i:i + 2], 16) for i in (1, 3, 5)] for c in Viridis256])
 
 
 def build_alignment_page(state) -> pn.viewable.Viewable:
+    """The tab; until the dataset has an image, just a way to load one."""
     dataset = state.spatial
-    images = spatial_plot.find_background_images(dataset.adata)
-    if not images:
-        return pn.pane.HTML(
-            "<h3>No tissue image to align to</h3>No image was found under <code>uns['spatial']</code>.",
+    wrapper = pn.Column(sizing_mode="stretch_both", margin=0)
+    uploaded: set[str] = set()  # labels of the images loaded from disk here
+
+    def show_page(sample: str):
+        images = spatial_plot.find_background_images(dataset.adata)
+        if images:
+            wrapper[:] = [_build_page(state, images, uploaded, sample)]
+            return
+        sample_select = pn.widgets.Select(name="Sample / FOV", options=list(dataset.sample_ids), value=sample,
+                                          width=360, visible=len(dataset.sample_ids) > 1)
+
+        def on_loaded(label: str, loaded_sample: str):
+            uploaded.add(label)
+            show_page(loaded_sample)
+
+        wrapper[:] = [pn.Column(
+            pn.pane.HTML("<h3>No tissue image to align to</h3>No image was found under "
+                         "<code>uns['spatial']</code>. Load one from a file for a sample:", margin=(0, 5)),
+            sample_select, _image_loader(state, lambda: sample_select.value, on_loaded, width=360),
             margin=(10, 20),
-        )
+        )]
+
+    show_page(dataset.sample_ids[0])
+    return wrapper
+
+
+def _image_loader(state, current_sample, on_loaded, width: int | None = None) -> pn.viewable.Viewable:
+    """A path input + Browse + Load button that reads a TIFF / JPEG / PNG into
+    uns['spatial'] for the sample `current_sample()` returns, then calls
+    on_loaded(image label, sample)."""
+    path_input, browse_btn, _ = build_path_picker("Tissue image file (TIFF, JPEG or PNG)",
+                                                  placeholder="/path/to/tissue.tif",
+                                                  file_pattern=tissue_image.IMAGE_FILE_PATTERN, busy=state.busy)
+    path_input.sizing_mode = "stretch_width"
+    load_btn = pn.widgets.Button(name="Load image for this sample", button_type="primary",
+                                 sizing_mode="stretch_width",
+                                 description="Placed on the cells' center, its short side as long as theirs.")
+    message = pn.pane.HTML("", styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5))
+
+    async def on_load(event):
+        path = os.path.expanduser(path_input.value.strip())
+        if not os.path.isfile(path):
+            message.object = "<b style='color:#b91c1c'>No file at that path.</b>" if path else "Choose a file first."
+            return
+        sample = current_sample()
+        load_btn.disabled = True
+        try:
+            async with state.busy.show("Loading the tissue image...", path):
+                img = await asyncio.to_thread(tissue_image.read_image, path)
+        except Exception as exc:
+            print_exception()
+            message.object = (f"<b style='color:#b91c1c'>Couldn't read the image:</b> "
+                              f"{html.escape(str(exc) or type(exc).__name__)}")
+            return
+        finally:
+            load_btn.disabled = False
+        label = tissue_image.add_image(state.spatial, sample, path, img)
+        remember_folder_of(path)
+        message.object = (f"Loaded <b>{html.escape(label)}</b> ({img.shape[1]:,} × {img.shape[0]:,} px) "
+                          f"for <b>{html.escape(sample)}</b>.")
+        for listener in state.image_listeners:
+            listener()
+        on_loaded(label, sample)
+
+    load_btn.on_click(on_load)
+    browse_row = pn.Row(path_input, browse_btn, sizing_mode="stretch_width", margin=0)
+    return pn.Column(browse_row, load_btn, message, width=width,
+                     sizing_mode="fixed" if width else "stretch_width", margin=0)
+
+
+def _build_page(state, images: dict, uploaded: set[str], initial_sample: str) -> pn.viewable.Viewable:
+    dataset = state.spatial
 
     # -- widgets -----------------------------------------------------------------------
     n_samples = len(dataset.sample_ids)
-    sample_select = pn.widgets.Select(name="Sample / FOV", options=list(dataset.sample_ids),
+    sample_select = pn.widgets.Select(name="Sample / FOV", options=list(dataset.sample_ids), value=initial_sample,
                                       sizing_mode="stretch_width", visible=n_samples > 1)
     image_select = pn.widgets.Select(name="Image", options=list(images), sizing_mode="stretch_width")
     orientation = pn.widgets.Select(
@@ -90,7 +165,8 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
     lm_hint = pn.pane.HTML(
         "Choose <b>Place landmarks</b>, click a spot you recognize on the cells, then the same spot "
         "on the image (the cells hide until you do). Each pair moves the cells to fit: 1 pair "
-        "shifts them, 2 or more also scale and rotate them. Spread the pairs out.",
+        "shifts them, 2 or more also scale and rotate them. Spread the pairs out. "
+        "Click a landmark again to delete it and its pair.",
         styles=HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 5),
     )
     lm_status = pn.pane.HTML("", sizing_mode="stretch_width", margin=(0, 5))
@@ -120,8 +196,21 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
     center = ColumnDataSource(data=dict(empty))
     pairs_src = ColumnDataSource(data={**empty, "ix": [], "iy": [], "label": []})
     pending_src = ColumnDataSource(data=dict(empty))
+    # The dial: a circle around the black cross, as big as the cells are scaled, with a
+    # hand and a dot that start at 12 o'clock and turn with them. Drawn in the original
+    # coordinates, so the browser moves it with the cells while dragging.
+    dial_ring = ColumnDataSource(data=dict(empty))
+    dial_hand = ColumnDataSource(data=dict(empty))
+    dial_dot = ColumnDataSource(data=dict(empty))
     hexes = fig.ngon(x="x", y="y", n=6, radius=1.0, angle=0.0, source=cells, fill_color="fill_color",
                      line_color=None, fill_alpha=opacity.value)
+    dial = [
+        fig.line(x="x", y="y", source=dial_ring, line_color="white", line_width=4, line_alpha=0.9),
+        fig.line(x="x", y="y", source=dial_ring, line_color="black", line_width=1.5, line_dash="dashed"),
+        fig.line(x="x", y="y", source=dial_hand, line_color="white", line_width=4, line_alpha=0.9),
+        fig.line(x="x", y="y", source=dial_hand, line_color="black", line_width=1.5),
+        fig.scatter(x="x", y="y", source=dial_dot, size=14, fill_color="#d62728", line_color="white", line_width=2),
+    ]
     fig.scatter(x="x", y="y", source=center, marker="cross", size=18, line_color="white", line_width=3)
     fig.scatter(x="x", y="y", source=center, marker="cross", size=16, line_color="black", line_width=1.5)
     fig.segment(x0="x", y0="y", x1="ix", y1="iy", source=pairs_src, line_color="white", line_width=2)
@@ -135,7 +224,8 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
 
     params = ColumnDataSource(data={"cx": [0.0], "cy": [0.0], "s": [1.0], "theta": [0.0], "d0x": [0.0],
                                     "d0y": [0.0], "base_r": [1.0], "mode": [_MODES[mode.value]]})
-    js_args = {"params": params, "srcs": [cells, center, pairs_src, pending_src], "hexes": hexes}
+    js_args = {"params": params, "srcs": [cells, center, pairs_src, pending_src, dial_ring, dial_hand, dial_dot],
+               "hexes": hexes}
     params.js_on_change("data", CustomJS(args=js_args, code=_PLACE_JS + _ON_PARAMS_JS))
     for event, phase in ((PanStart, "start"), (Pan, "move"), (PanEnd, "end")):
         fig.js_on_event(event, CustomJS(args=js_args, code=_PLACE_JS + f'const PHASE = "{phase}";' + _DRAG_JS))
@@ -301,7 +391,10 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
         dw, dh = drawn_size()
         ratio = max(extent[0] / dw if dw else 0, extent[1] / dh if dh else 0)
         has_scalef = "no scale factor" not in image_select.value
-        scale = 1.0 if (has_scalef and 0.2 <= ratio <= 1.5) or ratio <= 0 else 0.8 / ratio
+        if image_select.value in uploaded:  # sized to the cells when loaded
+            scale = 1.0
+        else:
+            scale = 1.0 if (has_scalef and 0.2 <= ratio <= 1.5) or ratio <= 0 else 0.8 / ratio
         return alignment.Similarity((dw / 2, dh / 2), scale, 0.0, anchor)
 
     # -- landmarks -------------------------------------------------------------------------
@@ -387,10 +480,41 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
             mirror_btn.name = f"The image looks mirrored - use '{suggestion[0]}' (fits {suggestion[1]:.0f}x better)"
             mirror_btn.tags = [suggestion[0]]
 
+    def landmark_at(point) -> int | None:
+        """The pair with a point (on the cells or on the image) within a few screen px of
+        `point`, the closest one if several."""
+        pairs = landmarks["pairs"]
+        if not pairs:
+            return None
+        def known(obj, name):  # set by the browser once the plot is drawn; unset until then
+            with contextlib.suppress(Exception):
+                value = getattr(obj, name)
+                return float(value) if value else None
+            return None
+
+        xr, yr = fig.x_range, fig.y_range
+        sizes = [known(fig, n) for n in ("inner_width", "inner_height")]
+        bounds = [known(r, n) for r in (xr, yr) for n in ("start", "end")]
+        if None in sizes or None in bounds:  # the view's extent isn't known yet
+            per_px = max(drawn_size()) / 600
+        else:
+            per_px = max(abs(bounds[1] - bounds[0]) / sizes[0], abs(bounds[3] - bounds[2]) / sizes[1])
+        P, Q_stored = landmark_arrays()
+        X = get_sim().apply(P)
+        Q = alignment.apply_matrix(orient(), Q_stored)
+        dist = np.minimum(np.hypot(*(X - point).T), np.hypot(*(Q - point).T))
+        i = int(np.argmin(dist))
+        return i if dist[i] <= _LANDMARK_HIT_PX * per_px else None
+
     def on_tap(event):
         if _MODES[mode.value] != "landmarks":
             return
         point = (event.x, event.y)
+        hit = landmark_at(point)
+        if hit is not None:  # clicking a landmark deletes its pair; the cells stay where they are
+            del landmarks["pairs"][hit]
+            draw_landmarks()
+            return
         if landmarks["pending"] is None:
             landmarks["pending"] = tuple(get_sim().invert(point))
         else:
@@ -448,6 +572,19 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
                       "fill_color": colors_for(values, binning.n_bins)}
         refresh_header(what)
 
+    def draw_dial(sample: str, sim: alignment.Similarity):
+        """The dial around the sample's anchor, in its original coordinates: at scale 1 its
+        radius is _DIAL_RADIUS of the cells' short side, and the hand points up."""
+        _, anchor, extent = sample_base(sample)
+        r = _DIAL_RADIUS * (min(extent) or max(extent) or 1.0)
+        t = np.linspace(0, 2 * np.pi, 129)
+        ax, ay = anchor
+        for src, px, py in ((dial_ring, ax + r * np.cos(t), ay + r * np.sin(t)),
+                            (dial_hand, np.array([ax, ax]), np.array([ay, ay - r])),  # y points down
+                            (dial_dot, np.array([ax]), np.array([ay - r]))):
+            x, y = sim.apply(np.column_stack([px, py])).T
+            src.data = {"px": px, "py": py, "x": x, "y": y}
+
     def recolor(*events):
         gene_input.visible = show_select.value == _GENE
         sample = sample_select.value
@@ -467,6 +604,7 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
             set_sim(sim, base_r=binning.width / np.sqrt(3))
             # The black cross: the point the cells turn and scale around.
             center.data = {"px": [anchor[0]], "py": [anchor[1]], "x": [sim.center[0]], "y": [sim.center[1]]}
+            draw_dial(sample, sim)
             draw_cells()
             draw_landmarks()
             refresh_apply()
@@ -508,9 +646,13 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
             "pan": "Dragging pans the view; the mouse wheel zooms.",
             "move": "Drag anywhere to move the cells. The mouse wheel zooms.",
             "rotate": "Drag around the black cross to turn the cells; dragging away from it or toward it "
-                      "scales them. Hold Shift to only turn them. Start far from the cross for finer control.",
-            "landmarks": "Click a spot on the cells, then the same spot on the image. Dragging pans the view.",
+                      "scales them. Hold Shift to only turn them. Start far from the cross for finer control. "
+                      "The dial shows the turn (red dot, at 12 o'clock unturned) and the scale (its size).",
+            "landmarks": "Click a spot on the cells, then the same spot on the image. Click a landmark to "
+                         "delete it and its pair. Dragging pans the view.",
         }[value]
+        for renderer in dial:
+            renderer.visible = value == "rotate"
         with hold_sync():
             params.data = {**params.data, "mode": [value]}
 
@@ -594,6 +736,21 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
     if state.regions is not None:
         state.regions.listeners.append(refresh_apply)
 
+    # -- loading an image from a file -------------------------------------------------------
+    def on_image_loaded(label: str, sample: str):
+        images.clear()
+        images.update(spatial_plot.find_background_images(dataset.adata))
+        with pn.io.hold():
+            image_select.options = list(images)
+            if image_select.value == label:
+                start()
+            else:
+                image_select.value = label  # starts it, through start()
+
+    loader = _image_loader(state, lambda: sample_select.value, on_image_loaded)
+    loader_card = pn.Card(loader, title="Load an image from a file", collapsed=True,
+                          sizing_mode="stretch_width", margin=(4, 5))
+
     # -- layout ---------------------------------------------------------------------------
     use_mode(mode.value)
     start()
@@ -605,7 +762,7 @@ def build_alignment_page(state) -> pn.viewable.Viewable:
         return pn.pane.HTML(f"<b>{title}</b>", margin=(12, 5, 0, 5), styles={"font-size": "14px"})
 
     sidebar = pn.Column(
-        section("1. What to align"), sample_select, image_select, orientation,
+        section("1. What to align"), sample_select, image_select, loader_card, orientation,
         section("2. What the cells show"), show_select, gene_input, hex_size, hex_size_hint, opacity,
         section("3. Move the cells"), mode, mode_hint,
         pn.Row(x_input, y_input, sizing_mode="stretch_width", margin=0),

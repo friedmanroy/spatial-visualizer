@@ -519,3 +519,5 @@ class AppState:
         self.regions = None
         # Called with a sample's id after the Align image tab moved its cells (or put them back).
         self.alignment_listeners: list = []
+        # Called with no arguments after a tissue image was loaded into uns['spatial'].
+        self.image_listeners: list = []

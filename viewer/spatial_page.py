@@ -213,6 +213,15 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bg_select.param.watch(update_bg_image, "value")
     bg_orientation.param.watch(update_bg_image, "value")
 
+    def on_images_loaded():
+        """A tissue image was loaded on the Align image tab: list it."""
+        bg_images.clear()
+        bg_images.update(spatial_plot.find_background_images(dataset.adata))
+        bg_select.param.update(name="Background image", options=["None"] + list(bg_images),
+                               disabled=not bg_images)
+
+    state.image_listeners.append(on_images_loaded)
+
     def show_aligned_image(sample_id: str):
         """A sample aligned on the Align image tab is shown on its image, as stored."""
         rec = alignment.records(dataset).get(sample_id)
