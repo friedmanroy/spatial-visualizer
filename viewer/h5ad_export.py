@@ -9,7 +9,8 @@ spot carries its hexagon's results, as on the plot.
 .X is the expression as it was loaded (the raw counts, before the viewer normalized
 anything); obs has every column - the file's own and the viewer's (Leiden clusterings,
 suggested cell types and their confidence, principal components) - plus every pathway's
-score as `pathway_<name>` and, if regions were drawn, which region each spot is in. A
+score as `pathway_<name>` (slashes, backslashes, colons and control characters in
+column names become "_") and, if regions were drawn, which region each spot is in. A
 pathway is scored the way the plot shows it: on each spot, or, when spots were pooled into
 hexagons for analysis, on their hexagon's pooled profile. Categorical columns get their
 colors in uns (`<column>_colors`, as scanpy keeps them). Samples aligned to an image are
@@ -35,6 +36,8 @@ from .version import print_exception
 
 #: obs column prefix of the pathway scores saved
 PATHWAY_PREFIX = "pathway_"
+#: characters replaced with "_" in saved obs column names (_rename_unsafe_columns)
+_UNSAFE_NAME_CHARS = re.compile(r"[/\\:\x00-\x1f\x7f]")
 
 
 def _no_report(text: str):
@@ -70,7 +73,8 @@ def build(dataset, pathways: dict, regions=None, regions_column: str | None = No
     adata = dataset.adata
     obs = adata.obs.copy()
     for name, scores in pathway_scores(dataset, pathways, report).items():
-        obs[PATHWAY_PREFIX + name] = np.asarray(scores, dtype=np.float32)
+        # by its saved name, so reopening a saved file and saving again re-scores the same column
+        obs[_UNSAFE_NAME_CHARS.sub("_", PATHWAY_PREFIX + name)] = np.asarray(scores, dtype=np.float32)
     uns = dict(adata.uns)
     if regions is not None and regions.items and regions_column:
         obs[regions_column] = regions.as_field()
@@ -83,8 +87,27 @@ def build(dataset, pathways: dict, regions=None, regions_column: str | None = No
         categories = [str(c) for c in obs[col].cat.categories]
         if spec.kind == "categorical" and all(c in spec.colors for c in categories):
             uns[f"{col}_colors"] = [spec.colors[c] for c in categories]
+    _rename_unsafe_columns(obs, uns)
     X = dataset.counts if dataset.counts is not None else adata.X
     return ad.AnnData(X=X, obs=obs, var=adata.var.copy(), obsm=dict(adata.obsm), uns=uns)
+
+
+def _rename_unsafe_columns(obs: pd.DataFrame, uns: dict):
+    """Replaces slashes, backslashes, colons and control characters in obs column names
+    with "_" (in place, along with their `<column>_colors` in uns) - .h5ad can't store a
+    "/" in a name (e.g. the bundled "PI3K/AKT/mTOR pathway"), and the others make names
+    awkward to read back."""
+    renames = {}
+    for col in obs.columns:
+        new = _UNSAFE_NAME_CHARS.sub("_", str(col))
+        if new == col:
+            continue
+        while new in obs.columns or new in renames.values():
+            new += "_"
+        renames[col] = new
+        if f"{col}_colors" in uns:
+            uns[f"{new}_colors"] = uns.pop(f"{col}_colors")
+    obs.rename(columns=renames, inplace=True)
 
 
 def save(dataset, path: str, pathways: dict, regions=None, regions_column: str | None = None,
