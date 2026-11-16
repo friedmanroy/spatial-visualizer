@@ -5,8 +5,6 @@ import asyncio
 import contextlib
 import html
 import os
-import sys
-import traceback
 
 import numpy as np
 import pandas as pd
@@ -23,6 +21,7 @@ from .colors import GRAY, GRAY_RGBA
 from .figure_saving import figure_save_controls
 from .h5ad_export import h5ad_save_controls
 from .regions_panel import RegionsPanel
+from .version import print_exception
 
 
 def build_spatial_page(state) -> pn.viewable.Viewable:
@@ -596,7 +595,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 await state.busy.step_now("Coloring the plot by the new clusters")
                 add_and_announce_field(col, select=True)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             leiden_status.object = f"**Leiden clustering failed:** {exc}"
             return
         leiden_status.object = (
@@ -621,7 +620,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 add_and_announce_field(result.confidence_column, select=False)
                 add_and_announce_field(result.column, select=True)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             typing_results.object = f"<b>Cell typing failed:</b> {html.escape(str(exc))}"
             return
         typing_results.object = results_html(result)

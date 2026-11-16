@@ -20,11 +20,11 @@ import contextlib
 import os
 import subprocess
 import sys
-import traceback
 
 import panel as pn
 
 from . import cache
+from .version import print_exception
 
 #: what the data file pickers offer: AnnData, or a Seurat object saved with saveRDS
 DATA_FILE_PATTERN = "*.h5ad *.rds"
@@ -146,7 +146,7 @@ async def ask_save_path(default_name: str, busy=None) -> str | None:
         try:
             cache.set_setting("last_save_directory", os.path.dirname(os.path.abspath(path)))
         except OSError:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
     return path
 
 
@@ -156,7 +156,7 @@ def remember_folder_of(path: str):
     try:
         cache.set_last_directory(os.path.dirname(os.path.abspath(os.path.expanduser(path))))
     except OSError:  # remembering the folder is a convenience - never fail because of it
-        traceback.print_exc(file=sys.stderr)
+        print_exception()
 
 
 def build_path_picker(
@@ -180,7 +180,7 @@ def build_path_picker(
             ) if busy is not None else contextlib.nullcontext()):
                 path = await asyncio.to_thread(_pick_file_blocking, file_pattern, start_dir)
         except Exception:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             return
         finally:
             browse_btn.disabled = False

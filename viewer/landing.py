@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
-import traceback
 
 import panel as pn
 
@@ -26,6 +24,7 @@ from .color_controls import HINT_STYLE, keep_filled
 from .file_picker import DATA_FILE_PATTERN, build_path_picker, remember_folder_of
 from .seurat import is_rds
 from .state import Dataset, read_viewer_file
+from .version import print_exception
 
 # First entry of the sample/FOV dropdown: don't split, treat the whole file as one sample.
 NO_SPLIT = "None (single sample / FOV)"
@@ -287,7 +286,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 return
             await open_data(path, adata, raw)
         except Exception as exc:  # surface the error in the UI rather than crashing the app
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             status.object = f"**Failed to load:** {exc}"
 
     async def offer_pooling(header: prepool.FileHeader):
@@ -349,7 +348,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 pool_step.visible = False
                 await open_data(path, adata, header.raw, sample_col=col, pooled_from=pooled_from)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             status.object = f"**Failed to load:** {exc}"
 
     async def open_data(path: str, adata, raw: bool, sample_col: str | None = None, pooled_from: int | None = None):
@@ -419,7 +418,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 for col in pcs:
                     ds.add_field(col)
             except Exception:  # nice to have: the viewer still opens without them
-                traceback.print_exc(file=sys.stderr)
+                print_exception()
         cluster_col = None
         if leiden_checkbox.value:
             hexes = ds.analysis_width is not None
@@ -438,7 +437,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                             gene_filter=gene_filter,
                         )
             except Exception as exc:
-                traceback.print_exc(file=sys.stderr)
+                print_exception()
                 open_status.object = f"**Leiden clustering failed:** {exc}"
                 return
             ds.add_field(cluster_col)
@@ -449,7 +448,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
                 ds.add_field(result.column)
                 ds.add_field(result.confidence_column)
             except Exception as exc:
-                traceback.print_exc(file=sys.stderr)
+                print_exception()
                 open_status.object = f"**Cell typing failed:** {exc}"
                 return
         if ds.color_cache is not None:

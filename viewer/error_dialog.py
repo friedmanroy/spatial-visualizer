@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import html
 import os
-import sys
 import traceback
 
 import panel as pn
+
+from .version import APP_NAME_AND_VERSION, print_exception
 
 OVERLAY_STYLES_BASE = {
     "position": "fixed", "top": "0px", "left": "0px", "right": "0px", "bottom": "0px",
@@ -47,8 +48,9 @@ def build_error_dialog() -> tuple[pn.viewable.Viewable, callable]:
     overlay = pn.Column(dialog_box, styles={**OVERLAY_STYLES_BASE, "display": "none"})
 
     def show_error(exc: BaseException):
-        traceback.print_exc(file=sys.stderr)
-        text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        print_exception(exc)
+        text = APP_NAME_AND_VERSION + "\n\n" + "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__))
         message_pane.object = f"<pre>{html.escape(text)}</pre>"
         overlay.styles = {**OVERLAY_STYLES_BASE, "display": "flex"}
 

@@ -149,7 +149,10 @@ which obs column separates samples/fields-of-view, and color everything either b
 
 For people who just want to use the app. No Python, no terminal, no admin rights.
 
-1. Unzip the `spatial-visualizer` folder you were sent, and put it wherever you like.
+1. Download the zip for your computer from the
+   [Releases page](https://github.com/friedmanroy/spatial-visualizer/releases) (the newest
+   release is at the top): `spatial-visualizer-vX.Y.Z-windows.zip` or `...-mac.zip`. Unzip
+   it and put the folder wherever you like.
 2. Inside it, double-click:
    - **Mac:** `Start Spatial Visualizer (Mac).command`
    - **Windows:** `Start Spatial Visualizer (Windows).bat`
@@ -174,11 +177,14 @@ and press Enter. This one-time setup unblocks the launcher, and then double-clic
 <details>
 <summary>What the launcher actually does</summary>
 
-It installs [uv](https://docs.astral.sh/uv/) into your user folder (once). uv then provides a
+It runs [uv](https://docs.astral.sh/uv/), the tool that sets up and runs the app. Release zips
+include it (in `uv/`); otherwise the launcher installs it into your user folder (once). uv then provides a
 private copy of Python and the required packages. Nothing is installed system-wide, and any
 Python you already have is left untouched.
 
 The launcher always runs the version of the app **in this folder**; to update, get a newer zip.
+The text window shows which version is running, and so does every error it prints - include
+that line when reporting a problem.
 
 Saved colors and field choices are kept in the `cache/` folder inside this folder. To keep
 them when switching to a newer zip, copy `cache/` into the new folder.
@@ -186,17 +192,23 @@ To remove everything: delete this folder, run `uv cache clean`, then delete uv i
 the uv docs).
 </details>
 
-### Sharing the app (maintainers)
+### Releasing a new version (maintainers)
 
-Send people a zip of the project. The simplest clean way (only tracked files, so no `venv/`,
-`cache/` or `.h5ad` data, and the Mac launcher stays executable) is:
+The version is the `version` in `pyproject.toml`. Pushing a matching git tag makes the
+[release workflow](.github/workflows/release.yml) build `spatial-visualizer-vX.Y.Z-windows.zip`
+and `...-mac.zip` (the committed source, `uv.lock`, the launchers and a standalone uv) and
+publish them on the [Releases page](https://github.com/friedmanroy/spatial-visualizer/releases):
 
-```bash
-git archive --format=zip --prefix=spatial-visualizer/ -o ~/Desktop/spatial-visualizer.zip HEAD
-```
+1. Set `version = "X.Y.Z"` in `pyproject.toml`, then run `uv lock` (it only updates the app's
+   own version in `uv.lock`).
+2. Commit and push.
+3. Tag and push the tag:
+   ```bash
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
 
-`git archive` only includes committed changes. Users run the copy in their zip, so to update
-them you send a new zip.
+The workflow stops if the tag doesn't match `pyproject.toml`. Its progress is under the
+repository's **Actions** tab, and the release appears a minute or two later.
 
 ## Getting started - for developers
 
@@ -259,6 +271,7 @@ st_visualizer.py         entry point (`python st_visualizer.py`)
 pyproject.toml           package metadata + pinned dependencies (`spatial-visualizer` command)
 uv.lock                  exact versions of every package, used by the launchers
 Start Spatial Visualizer (Mac).command / (Windows).bat   double-click launchers
+.github/workflows/release.yml   builds the release zips when a vX.Y.Z tag is pushed
 viewer/
   cli.py                 starts the server (shared by the script and the installed command)
   app.py                 assembles the landing page and the tabbed main viewer
@@ -291,5 +304,6 @@ viewer/
   cache.py                   persists per-dataset color/field choices and regions to cache/
   file_picker.py              native OS file-picker integration
   error_dialog.py             global error popup
+  version.py                  the app's version (from pyproject.toml), printed with errors
   data/pathways.json        example gene-set definitions (bundled with the package)
 ```

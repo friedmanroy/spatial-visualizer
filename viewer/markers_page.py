@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import sys
-import traceback
 
 import pandas as pd
 import panel as pn
@@ -23,6 +21,7 @@ from .celltype_controls import results_html
 from .color_controls import HINT_STYLE
 from .file_picker import build_path_picker
 from .pathways_page import parse_genes
+from .version import print_exception
 
 #: prefix for marker sets added as pathways ("Show as pathway")
 PATHWAY_PREFIX = "Cell type: "
@@ -286,7 +285,7 @@ def build_markers_page(state) -> pn.viewable.Viewable:
             async with state.busy.show("Importing the marker table...", path):
                 db, about = await asyncio.to_thread(celltyping.import_marker_file, path, name)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             import_status.object = f"<b>Couldn't import it:</b> {html.escape(str(exc))}"
             return
         import_status.object = (f"Imported <b>{html.escape(name)}</b>. {html.escape(about)} "

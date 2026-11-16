@@ -16,11 +16,17 @@ set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%PATH%"
 rem Saved colors/fields/regions are kept in this folder's cache\.
 set "SPATIAL_VISUALIZER_CACHE_DIR=%HERE%\cache"
 
-where uv >nul 2>nul
-if errorlevel 1 (
-    echo First-time setup: installing uv ^(the tool that runs the app^)...
-    powershell -NoProfile -ExecutionPolicy ByPass -Command "irm https://astral.sh/uv/install.ps1 | iex"
-    if errorlevel 1 goto :fail
+rem Release zips bring their own uv (uv\windows\uv.exe); otherwise use or install one.
+set "UV=uv"
+if exist "%HERE%\uv\windows\uv.exe" (
+    set "UV=%HERE%\uv\windows\uv.exe"
+) else (
+    where uv >nul 2>nul
+    if errorlevel 1 (
+        echo First-time setup: installing uv ^(the tool that runs the app^)...
+        powershell -NoProfile -ExecutionPolicy ByPass -Command "irm https://astral.sh/uv/install.ps1 | iex"
+        if errorlevel 1 goto :fail
+    )
 )
 
 echo Starting the Spatial Transcriptomics Visualizer.
@@ -29,7 +35,7 @@ echo The app opens in your browser. Closing the browser tab stops it ^(after abo
 echo.
 
 echo Using the version in this folder.
-uv run --frozen --managed-python --python %PYTHON_VERSION% --project "%HERE%" spatial-visualizer
+"%UV%" run --frozen --managed-python --python %PYTHON_VERSION% --project "%HERE%" spatial-visualizer
 if errorlevel 1 goto :fail
 goto :eof
 

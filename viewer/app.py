@@ -2,8 +2,6 @@
 between them."""
 from __future__ import annotations
 
-import sys
-import traceback
 import weakref
 
 import panel as pn
@@ -21,6 +19,7 @@ from .markers_page import build_markers_page
 from .pathways_page import build_pathways_page
 from .spatial_page import build_spatial_page
 from .state import AppState
+from .version import print_exception
 
 # Each browser tab (Bokeh document) shows uncaught errors in its own error dialog.
 # pn.config.exception_handler is global, so it dispatches on the document whose callback raised.
@@ -32,7 +31,7 @@ def _dispatch_error(exc: BaseException):
     if handler is not None:
         handler(exc)
     else:
-        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+        print_exception(exc)
 
 
 def build() -> pn.viewable.Viewable:

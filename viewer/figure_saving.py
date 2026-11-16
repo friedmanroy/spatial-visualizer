@@ -7,14 +7,13 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-import sys
-import traceback
 
 import panel as pn
 
 from . import cache, figure_export
 from .color_controls import HINT_STYLE
 from .file_picker import ask_save_path
+from .version import print_exception
 
 
 def figure_save_controls(prepare, busy, description: str) -> tuple[pn.Row, pn.pane.HTML]:
@@ -48,7 +47,7 @@ def figure_save_controls(prepare, busy, description: str) -> tuple[pn.Row, pn.pa
             async with busy.show("Saving the figure...", path):
                 await asyncio.to_thread(render, path, fmt)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             status.object = f"<b>Couldn't save the figure:</b> {html.escape(str(exc))}"
         else:
             status.object = f"Saved <code>{html.escape(path)}</code>"

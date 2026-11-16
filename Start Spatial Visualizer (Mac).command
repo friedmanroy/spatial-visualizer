@@ -19,10 +19,18 @@ fail() {
     exit 1
 }
 
-if ! command -v uv >/dev/null 2>&1; then
-    echo "First-time setup: installing uv (the tool that runs the app)..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh || fail
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+# Release zips bring their own uv (uv/mac-arm64 or uv/mac-x64); otherwise use or install one.
+case "$(uname -m)" in
+    arm64) UV="$HERE/uv/mac-arm64/uv" ;;
+    *) UV="$HERE/uv/mac-x64/uv" ;;
+esac
+if [ ! -x "$UV" ]; then
+    UV=uv
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "First-time setup: installing uv (the tool that runs the app)..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh || fail
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    fi
 fi
 
 echo "Starting the Spatial Transcriptomics Visualizer."
@@ -31,5 +39,5 @@ echo "The app opens in your browser. Closing the browser tab stops it (after abo
 echo
 
 echo "Using the version in this folder."
-uv run --frozen --managed-python --python "$PYTHON_VERSION" \
+"$UV" run --frozen --managed-python --python "$PYTHON_VERSION" \
     --project "$HERE" spatial-visualizer || fail

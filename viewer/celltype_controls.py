@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import html
-import sys
-import traceback
 
 import panel as pn
 
 from . import cache, celltyping
 from .color_controls import HINT_STYLE
+from .version import print_exception
 
 _SPECIES = {"Human": "human", "Mouse": "mouse"}
 #: what the score next to each suggestion means, per scoring method
@@ -137,7 +136,7 @@ class CellTypingControls:
             try:
                 markers = self._loaded[db.key] = celltyping.load_markers(db)
             except Exception:
-                traceback.print_exc(file=sys.stderr)
+                print_exception()
         self._set_markers(markers)
 
     def _set_markers(self, markers):
@@ -160,7 +159,7 @@ class CellTypingControls:
         try:
             cache.set_setting("celltyping_database", event.new)
         except OSError:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
         self._show_database()
         if self.enabled.value and self._markers is None:
             try:

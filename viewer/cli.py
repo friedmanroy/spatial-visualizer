@@ -8,6 +8,7 @@ import threading
 import panel as pn
 
 from .app import build
+from .version import APP_NAME_AND_VERSION
 
 #: the port the app is served on, unless it's taken (e.g. by an app already running)
 DEFAULT_PORT = 5006
@@ -68,6 +69,7 @@ def _free_port(preferred: int) -> int:
 
 
 def main():
+    print(f"{APP_NAME_AND_VERSION}\n", flush=True)
     pn.state.on_session_destroyed(_session_destroyed)
     # Serve a function (not an already-built app) so each connection gets its own
     # proper Bokeh session - that's what makes session-destroyed detection (and thus

@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import sys
-import traceback
 
 import numpy as np
 import panel as pn
@@ -20,6 +18,7 @@ from . import regions as regions_mod
 from .color_controls import HINT_STYLE, _SWATCH_CSS, _SWATCH_SIZE
 from .colors import GRAY_RGBA
 from .state import top_k_per_row
+from .version import print_exception
 
 _NEW_REGION = "A new region"
 #: a click of "Clear all" must be followed by another within this long (ms) to clear
@@ -366,7 +365,7 @@ class RegionsPanel:
                 if results:
                     self.state.de_dialog.show(results, errors)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             self.de_status.object = f"<b>Differential expression failed:</b> {html.escape(str(exc))}"
             return
         self.last_btn.visible = bool(results)

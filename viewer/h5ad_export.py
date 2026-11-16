@@ -22,8 +22,6 @@ import asyncio
 import html
 import os
 import re
-import sys
-import traceback
 
 import anndata as ad
 import numpy as np
@@ -33,6 +31,7 @@ import panel as pn
 from . import pathways as pathways_mod
 from .color_controls import HINT_STYLE
 from .file_picker import ask_save_path
+from .version import print_exception
 
 #: obs column prefix of the pathway scores saved
 PATHWAY_PREFIX = "pathway_"
@@ -118,7 +117,7 @@ def h5ad_save_controls(get_dataset, get_pathways, get_regions, busy) -> tuple[pn
             async with busy.show("Saving the .h5ad...", path):
                 await asyncio.to_thread(save, dataset, path, get_pathways(), regions, column, busy.step)
         except Exception as exc:
-            traceback.print_exc(file=sys.stderr)
+            print_exception()
             status.object = f"<b>Couldn't save the .h5ad:</b> {html.escape(str(exc))}"
         else:
             status.object = f"Saved <code>{html.escape(path)}</code>"

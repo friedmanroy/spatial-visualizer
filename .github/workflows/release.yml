@@ -1,0 +1,66 @@
+# Builds the download zips and publishes them as a GitHub Release whenever a version tag
+# (v0.2.0, v1.0.0, ...) is pushed. See "Releasing a new version" in the README.
+#
+# Each zip holds the app's source at that tag (git archive: tracked files only), uv.lock,
+# the double-click launchers, and a standalone uv binary - so users need no Python and no
+# uv install, and the first launch installs exactly the locked package versions.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # to create the release and upload its files
+
+env:
+  # the uv bundled in the zips; bump it deliberately, like any other pinned dependency
+  UV_VERSION: "0.12.20"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version in pyproject.toml
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match pyproject.toml's version ($version)."
+            exit 1
+          fi
+
+      - name: Build the zips
+        run: |
+          name="spatial-visualizer-$GITHUB_REF_NAME"
+          base="https://github.com/astral-sh/uv/releases/download/$UV_VERSION"
+          mkdir -p dist uv-dl
+
+          curl -LsSf -o uv-dl/win.zip "$base/uv-x86_64-pc-windows-msvc.zip"
+          curl -LsSf -o uv-dl/mac-arm64.tar.gz "$base/uv-aarch64-apple-darwin.tar.gz"
+          curl -LsSf -o uv-dl/mac-x64.tar.gz "$base/uv-x86_64-apple-darwin.tar.gz"
+
+          # Windows: the source + uv\windows\uv.exe
+          git archive --format=tar --prefix="$name/" HEAD | tar -x -C dist
+          mkdir -p "dist/$name/uv/windows"
+          unzip -q -j uv-dl/win.zip uv.exe -d "dist/$name/uv/windows"
+          (cd dist && zip -qr "$name-windows.zip" "$name")
+          rm -rf "dist/$name"
+
+          # macOS: the source + uv for Apple silicon and Intel (the launcher picks one)
+          git archive --format=tar --prefix="$name/" HEAD | tar -x -C dist
+          for arch in mac-arm64 mac-x64; do
+            mkdir -p "dist/$name/uv/$arch"
+            tar -xzf "uv-dl/$arch.tar.gz" -C "dist/$name/uv/$arch" --strip-components=1 --wildcards '*/uv'
+          done
+          chmod +x "dist/$name"/uv/mac-*/uv "dist/$name/Start Spatial Visualizer (Mac).command"
+          (cd dist && zip -qr "$name-mac.zip" "$name")
+          rm -rf "dist/$name"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+            --title "Spatial Visualizer $GITHUB_REF_NAME" --generate-notes
