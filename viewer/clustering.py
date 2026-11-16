@@ -151,8 +151,33 @@ def neighbors_graph(adata, n_pcs: int, n_neighbors: int, report=_no_report,
 
     n_neigh = max(2, min(n_neighbors, tmp.n_obs - 1))
     report(f"Building the neighbor graph ({n_neigh} neighbors per {unit[:-1]})")
-    sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps)
+    sc.pp.neighbors(tmp, n_neighbors=n_neigh, n_pcs=n_comps,
+                    transformer=_knn_transformer(tmp.n_obs, n_neigh))
     return tmp
+
+
+def _knn_transformer(n_obs: int, n_neighbors: int):
+    """None (scanpy's own exact search) below scanpy's 8192-cell cutoff; above it, the
+    pynndescent search scanpy would pick, with the settings it would use, but handing
+    back a csr_matrix: pynndescent 0.7 returns a csr_array, which scanpy 1.12 can't read
+    (it calls getnnz, which scipy's sparse arrays don't have)."""
+    if n_obs < 8192:
+        return None
+    from pynndescent import PyNNDescentTransformer
+
+    class CsrMatrixNNDescent(PyNNDescentTransformer):
+        def fit_transform(self, X, y=None, **fit_params):
+            return sp.csr_matrix(super().fit_transform(X, y, **fit_params))
+
+        def transform(self, X, y=None):
+            return sp.csr_matrix(super().transform(X, y))
+
+    return CsrMatrixNNDescent(
+        n_neighbors=n_neighbors, metric="euclidean", random_state=0,
+        n_jobs=sc.settings.n_jobs,
+        n_trees=min(64, 5 + round(n_obs ** 0.5 / 20.0)),
+        n_iters=max(5, round(np.log2(n_obs))),
+    )
 
 
 def _analysis_genes(adata, report=_no_report, gene_filter: GeneFilter | None = None) -> np.ndarray:
