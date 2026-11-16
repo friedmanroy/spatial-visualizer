@@ -2,8 +2,9 @@
 # (v0.2.0, v1.0.0, ...) is pushed. See "Releasing a new version" in the README.
 #
 # Each zip holds the app's source at that tag (git archive: tracked files only), uv.lock,
-# the double-click launchers, and a standalone uv binary - so users need no Python and no
-# uv install, and the first launch installs exactly the locked package versions.
+# its platform's double-click launcher (plus install_vis.bash on macOS), and a standalone
+# uv binary - so users need no Python and no uv install, and the first launch installs
+# exactly the locked package versions.
 name: Release
 
 on:
@@ -41,15 +42,18 @@ jobs:
           curl -LsSf -o uv-dl/mac-arm64.tar.gz "$base/uv-aarch64-apple-darwin.tar.gz"
           curl -LsSf -o uv-dl/mac-x64.tar.gz "$base/uv-x86_64-apple-darwin.tar.gz"
 
-          # Windows: the source + uv\windows\uv.exe
+          # Windows: the source + uv\windows\uv.exe, without the Mac launcher / installer
           git archive --format=tar --prefix="$name/" HEAD | tar -x -C dist
+          rm "dist/$name/Start Spatial Visualizer (Mac).command" "dist/$name/install_vis.bash"
           mkdir -p "dist/$name/uv/windows"
           unzip -q -j uv-dl/win.zip uv.exe -d "dist/$name/uv/windows"
           (cd dist && zip -qr "$name-windows.zip" "$name")
           rm -rf "dist/$name"
 
-          # macOS: the source + uv for Apple silicon and Intel (the launcher picks one)
+          # macOS: the source + uv for Apple silicon and Intel (the launcher picks one),
+          # without the Windows launcher
           git archive --format=tar --prefix="$name/" HEAD | tar -x -C dist
+          rm "dist/$name/Start Spatial Visualizer (Windows).bat"
           for arch in mac-arm64 mac-x64; do
             mkdir -p "dist/$name/uv/$arch"
             tar -xzf "uv-dl/$arch.tar.gz" -C "dist/$name/uv/$arch" --strip-components=1 --wildcards '*/uv'
