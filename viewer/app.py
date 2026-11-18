@@ -6,7 +6,7 @@ import weakref
 
 import panel as pn
 
-from . import alignment
+from . import alignment, windows
 from .alignment_page import build_alignment_page
 from .busy_overlay import BusyOverlay
 from .de_dialog import DEDialog
@@ -56,8 +56,14 @@ def build() -> pn.viewable.Viewable:
             ("Align image", align_tab),
             sizing_mode="stretch_both",
         )
+        # Top right, in the tabs' row (which has room to spare), on every tab.
+        window_btn, window_status = windows.new_window_controls(
+            height=30, margin=(2, 8), styles={"position": "absolute", "top": "0", "right": "0", "z-index": "10"})
+        window_status.styles = {**window_status.styles, "position": "absolute", "top": "34px", "right": "8px",
+                                "z-index": "10", "max-width": "420px", "background": "white"}
         root.sizing_mode = "stretch_both"
-        root[:] = [tabs]
+        root.styles = {"position": "relative"}
+        root[:] = [tabs, window_btn, window_status]
 
     landing = build_landing(state, on_ready=show_viewer)
     root.sizing_mode = "stretch_width"

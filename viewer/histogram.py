@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 
 WIDTH_PX = 280
@@ -43,30 +44,62 @@ def render_totals_histogram(totals: np.ndarray, cutoff: float) -> str:
 
 
 def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None, color: str) -> str:
+    """`local_values`' distribution (in `color`), over `global_values`' (gray) if given,
+    as density bars on a shared x axis. Drawn as SVG directly rather than with
+    matplotlib: these are redrawn on every recolor, and a matplotlib figure takes ~0.1 s."""
     local_values = np.asarray(local_values, dtype=float)
     local_values = local_values[np.isfinite(local_values)]
     if local_values.size == 0:
         return ""
-
-    fig, ax = plt.subplots(figsize=(WIDTH_PX / 100, HEIGHT_PX / 100), dpi=100)
     if global_values is not None:
         global_values = np.asarray(global_values, dtype=float)
         global_values = global_values[np.isfinite(global_values)]
-        lo = min(local_values.min(), global_values.min())
-        hi = max(local_values.max(), global_values.max())
+        lo = min(local_values.min(), global_values.min()) if global_values.size else local_values.min()
+        hi = max(local_values.max(), global_values.max()) if global_values.size else local_values.max()
     else:
         lo, hi = local_values.min(), local_values.max()
+    lo, hi = float(lo), float(hi)
     if hi <= lo:
         hi = lo + 1.0
     bin_edges = np.linspace(lo, hi, 31)
-
+    series = []
     if global_values is not None and global_values.size:
-        ax.hist(global_values, bins=bin_edges, color="#9e9e9e", alpha=0.5, density=True, label="all cells")
-    ax.hist(local_values, bins=bin_edges, color=color, alpha=0.8, density=True, label="shown")
+        series.append((np.histogram(global_values, bins=bin_edges, density=True)[0], "#9e9e9e", 0.5))
+    series.append((np.histogram(local_values, bins=bin_edges, density=True)[0], color, 0.8))
+    top = max(float(h.max()) for h, _, _ in series) or 1.0
 
-    ax.set_yticks([])
-    ax.tick_params(axis="x", labelsize=7, length=2)
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    fig.tight_layout(pad=0.2)
-    return _as_img(fig, HEIGHT_PX)
+    w, h = WIDTH_PX, HEIGHT_PX
+    x0, x1, y_top, y_axis = 8.0, w - 8.0, 2.0, h - 15.0
+    sx = lambda v: x0 + (v - lo) / (hi - lo) * (x1 - x0)
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}">']
+    for heights, fill, alpha in series:
+        path = []
+        for i in np.flatnonzero(heights > 0):
+            left, right = sx(bin_edges[i]), sx(bin_edges[i + 1])
+            bar = heights[i] / top * (y_axis - y_top)
+            path.append(f"M{left:.2f} {y_axis:.2f}V{y_axis - bar:.2f}H{right:.2f}V{y_axis:.2f}Z")
+        parts.append(f'<path d="{"".join(path)}" fill="{fill}" fill-opacity="{alpha}"/>')
+    parts.append(f'<path d="M{x0:.2f} {y_axis:.2f}H{x1:.2f}" stroke="#000" stroke-width="0.8"/>')
+    ticks = [t for t in MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]).tick_values(lo, hi)
+             if lo - 1e-9 * (hi - lo) <= t <= hi + 1e-9 * (hi - lo)]
+    decimals = _decimals(ticks[1] - ticks[0]) if len(ticks) > 1 else 2
+    for t in ticks:
+        x = sx(t)
+        label = f"{t:.{decimals}f}"
+        if label.startswith("-") and float(label) == 0:
+            label = label[1:]
+        label = label.replace("-", "\u2212")  # a typographic minus, as matplotlib draws it
+        parts.append(f'<path d="M{x:.2f} {y_axis:.2f}v3" stroke="#000" stroke-width="0.8"/>'
+                     f'<text x="{x:.2f}" y="{h - 3}" font-size="9.7" font-family="DejaVu Sans, Arial, sans-serif" '
+                     f'text-anchor="middle">{label}</text>')
+    parts.append("</svg>")
+    b64 = base64.b64encode("".join(parts).encode()).decode()
+    return f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:{h}px;display:block" />'
+
+
+def _decimals(step: float) -> int:
+    """How many decimals tick labels `step` apart need to show the step exactly."""
+    for d in range(7):
+        if abs(round(step, d) - step) <= 1e-9 * max(abs(step), 1e-12):
+            return d
+    return 6

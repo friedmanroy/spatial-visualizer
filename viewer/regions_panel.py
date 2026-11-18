@@ -13,6 +13,7 @@ import panel as pn
 from bokeh.events import SelectionGeometry
 from bokeh.models import ColumnDataSource, LassoSelectTool, PanTool
 
+from .collapsible import Collapsible
 from . import de
 from . import regions as regions_mod
 from .color_controls import HINT_STYLE, _SWATCH_CSS, _SWATCH_SIZE
@@ -132,7 +133,7 @@ class RegionsPanel:
             styles=HINT_STYLE, sizing_mode="stretch_width", margin=(4, 5),
         )
         heading = lambda text: pn.pane.HTML(f"<b>{text}</b>", margin=(10, 5, 0, 5), styles={"font-size": "13px"})
-        self.card = pn.Card(
+        self.card = Collapsible(
             self.draw_toggle, draw_hint, self.lasso_target, self.empty_hint, self.list_box,
             self.only_regions, self.show_outlines,
             pn.Row(self.save_btn, self.clear_btn, sizing_mode="stretch_width", margin=0),
@@ -141,7 +142,6 @@ class RegionsPanel:
             self.comparison, self.region_a, self.region_b, self.method, self.de_unit, self.de_unit_hint, self.de_btn, self.last_btn,
             self.de_status,
             title="Regions & differential expression", collapsed=not self.regions.items,
-            sizing_mode="stretch_width", margin=(4, 5),
         )
         self.update_hex_width()
         self.refresh()

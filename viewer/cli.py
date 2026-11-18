@@ -3,6 +3,7 @@
 """
 import os
 import socket
+import sys
 import threading
 
 import panel as pn
@@ -63,6 +64,11 @@ def _free_port(preferred: int) -> int:
             return preferred
         except OSError:
             pass
+    return _random_port()
+
+
+def _random_port() -> int:
+    """A free port the system picks."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("localhost", 0))
         return s.getsockname()[1]
@@ -76,7 +82,8 @@ def main():
     # the auto-shutdown above) actually fire when the browser tab is closed.
     pn.serve(
         _build_session,
-        port=_free_port(DEFAULT_PORT),
+        # --random-port: a copy started by "Open another window" (viewer.windows).
+        port=_random_port() if "--random-port" in sys.argv[1:] else _free_port(DEFAULT_PORT),
         title="Spatial Transcriptomics Visualizer",
         show=True,
         unused_session_lifetime_milliseconds=_UNUSED_SESSION_MS,

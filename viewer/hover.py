@@ -62,6 +62,18 @@ def empty_columns(n: int) -> dict[str, np.ndarray]:
             **{col: np.full(n, -1, dtype=np.int32) for col in TOP_COLUMNS}}
 
 
+def top_gene_columns(top: np.ndarray, var_names) -> tuple[dict[str, np.ndarray], list[str]]:
+    """(the TOP_COLUMNS, the meta's `top` names) for Dataset.top_genes' result `top`: each
+    cell's (or bin's) most expressed genes as codes into a list of just the genes that
+    occur, so the tooltip's labels stay short."""
+    used, codes = np.unique(top, return_inverse=True)
+    codes = codes.reshape(top.shape).astype(np.int32)
+    offset = 1 if len(used) and used[0] == -1 else 0  # -1 (none) is the smallest
+    codes -= offset
+    cols = {col: codes[:, j] for j, col in enumerate(TOP_COLUMNS)}
+    return cols, [str(var_names[g]) for g in used[offset:]]
+
+
 def add_hover(fig, renderers, source) -> CustomJSHover:
     """Attaches the tooltip to `renderers`; returns the formatter whose `args['meta']`
     describes what's currently shown (see `ColorControls.hover_data`)."""

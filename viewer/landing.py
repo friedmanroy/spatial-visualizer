@@ -17,7 +17,7 @@ import os
 
 import panel as pn
 
-from . import clustering, hexbin, prepool
+from . import clustering, hexbin, prepool, windows
 from . import pathways as pathways_mod
 from .cache import ColorCache
 from .color_controls import HINT_STYLE, keep_filled
@@ -465,8 +465,10 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
     pool_btn.on_click(on_pool_continue)
     open_btn.on_click(on_open)
 
+    window_btn, window_status = windows.new_window_controls(margin=(18, 5, 5, 5))
     return pn.Column(
-        "# Spatial Transcriptomics Visualizer",
+        pn.Row(pn.pane.Markdown("# Spatial Transcriptomics Visualizer", margin=(0, 10)), window_btn, margin=0),
+        window_status,
         "Enter the path to an AnnData `.h5ad` file with spatial coordinates in "
         "`adata.obsm['spatial']`, or a Seurat object (v4 or v5) saved with `saveRDS` as `.rds`.",
         pn.Column(path_picker, load_btn, status, width=680, margin=0),

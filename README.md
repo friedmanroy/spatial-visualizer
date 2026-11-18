@@ -28,6 +28,14 @@ which obs column separates samples/fields-of-view, and color everything either b
   200,000 cells are in view (adjustable) and the cells there are drawn individually (as circles
   by default), colored per cell by expression; clusters and cell types computed on the
   hexagons color each cell like its hexagon.
+- **Hide cells with zero counts** - a checkbox under **Display settings** leaves out the cells
+  (or hexagonal bins) with no counts of the genes shown in the Gene view - or, when coloring by
+  a field or pathway, no counts at all. The header says how many are hidden.
+- **Several windows at once** - **Open another window** (top right, and on the load page)
+  starts a separate copy of the app on its own random port, in a new browser tab: e.g. to look
+  at two files side by side. Each window runs in its own process, so a slow step in one never
+  holds up another; each stops on its own once its tab is closed. A copy started this way has
+  no console window, so its messages go to `cache/logs/`.
 - **Top genes in view** - the header above the plot lists the 4 most expressed genes among
   the cells currently in view, updating as you pan and zoom.
 - **Hover tooltips** - hovering a cell (or hex bin) shows its category in the current field
@@ -160,7 +168,8 @@ For people who just want to use the app. No Python, no terminal, no admin rights
    - The **first launch** downloads everything it needs and can take a few minutes. Later
      launches are much faster.
    - Closing the browser tab stops the app (about half a minute later, so reloading the page
-     doesn't). If another copy is already running, the new one opens on a different port.
+     doesn't). If another copy is already running, the new one opens on a different port. To
+     work in several windows at once, use **Open another window** inside the app.
 
 **First time on a Mac:** macOS may say the file "cannot be opened because it is from an
 unidentified developer". Right-click (or Control-click) the file, choose **Open**, then click
@@ -299,6 +308,9 @@ viewer/
   celltype_controls.py       species / tissue widgets and the suggestions table
   markers_page.py            "Cell types" tab: your marker sets, database import
   busy_overlay.py            full-page "working..." overlay
+  background.py              runs slow, non-essential work (tooltip genes, histogram overlays) after a recolor
+  collapsible.py             the sidebar's collapsible sections (much cheaper to open than pn.Card)
+  windows.py                 "Open another window": a separate copy of the app on a random port
   spatial_plot.py            spatial rendering (hexagon/square/circle glyphs sized from cell spacing)
   state.py                   AppState / Dataset - loaded AnnData(s) + caches
   cache.py                   persists per-dataset color/field choices and regions to cache/

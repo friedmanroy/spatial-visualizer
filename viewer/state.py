@@ -57,6 +57,15 @@ def read_viewer_h5ad(path: str):
     return ad.AnnData(X=X, obs=obs, var=var, obsm=obsm, uns=uns)
 
 
+def _evict_oldest(cache: dict):
+    """Drops `cache`'s oldest entry - tolerating another thread (background.run_later)
+    changing it at the same moment."""
+    try:
+        cache.pop(next(iter(cache)), None)
+    except (StopIteration, RuntimeError):
+        pass
+
+
 def top_k_per_row(X, k: int, exclude: np.ndarray | None = None) -> np.ndarray:
     """(n_rows, k) column indices of each row's k largest values, largest first; -1
     where a row has fewer than k positive values. Columns where the boolean `exclude`
@@ -132,6 +141,7 @@ class Dataset:
         self._gene_cache: dict[str, np.ndarray] = {}
         self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
         self._cell_totals: np.ndarray | None = None  # each cell's total of self.counts
+        self._x_totals: np.ndarray | None = None  # each cell's total of .X (spot_totals)
         # Which hexagons are analysed and whether they're normalized (hexbin.HexFilter);
         # its `normalize` is the load page's choice for cells as well as hexagons.
         self.hex_filter = hexbin.HexFilter()
@@ -149,6 +159,7 @@ class Dataset:
         # profiles they were last scored on.
         self._gene_set_cache: dict[tuple, tuple] = {}
         self._pooled_cache: tuple | None = None
+        self._pooled_lock = threading.Lock()
         # obs column -> celltyping.CellTypingResult, for showing per-cluster suggestions.
         self.celltype_results: dict = {}
         # obs column -> bin width (cell spacings) of clusterings made on hexagonal bins,
@@ -286,6 +297,16 @@ class Dataset:
             self._cell_totals = np.asarray(counts.sum(axis=1)).ravel()
         return self._cell_totals
 
+    def spot_totals(self) -> np.ndarray:
+        """Each cell's total counts (cell_totals), or - with no raw counts kept - its total
+        of .X: either way 0 exactly for cells / spots with no counts."""
+        totals = self.cell_totals()
+        if totals is not None:
+            return totals
+        if self._x_totals is None:
+            self._x_totals = np.asarray(self.adata.X.sum(axis=1)).ravel()
+        return self._x_totals
+
     def kept_bins(self, idx: np.ndarray, binning, hex_filter: hexbin.HexFilter | None = None) -> np.ndarray:
         """Boolean mask over `binning`'s bins (of the sample's cells `idx`): those `hex_filter`
         (by default self.hex_filter) analyses."""
@@ -344,8 +365,8 @@ class Dataset:
                 if self._lognorm is not None:
                     adata = self._lognorm
                 else:
-                    n = adata.n_obs
-                    rows = np.sort(np.random.default_rng(0).choice(n, min(n, _HVG_SAMPLE), replace=False))
+                    n_obs = adata.n_obs  # (not `n`: that's how many genes to return)
+                    rows = np.sort(np.random.default_rng(0).choice(n_obs, min(n_obs, _HVG_SAMPLE), replace=False))
                     adata = self.log_counts(adata.X[rows])
             hvg = sc.pp.highly_variable_genes(adata, flavor="seurat", inplace=False)
             dispersion = hvg["dispersions_norm"].to_numpy(dtype=float)
@@ -412,6 +433,12 @@ class Dataset:
         """(AnnData of the bins' pooled profiles - made like clustering.hex_profiles: summed
         counts, normalize_total if hex_filter.normalize, log1p - of the bins the hexagon filter
         keeps and with any cell in `mask`; those bins' indices). The last one is kept."""
+        # One at a time (the histograms make other samples' in the background): two of
+        # these at once would take twice the memory, and each replaces the kept one.
+        with self._pooled_lock:
+            return self._pooled_profiles_locked(idx, binning, mask, mask_key)
+
+    def _pooled_profiles_locked(self, idx: np.ndarray, binning, mask: np.ndarray | None, mask_key):
         key = (id(binning), mask_key, self.hex_filter)
         if self._pooled_cache is not None and self._pooled_cache[0] == key and self._pooled_cache[1] is binning:
             return self._pooled_cache[2]
@@ -452,7 +479,7 @@ class Dataset:
             sc.tl.score_genes(pooled, gene_list=list(genes), score_name="_score", random_state=0, use_raw=False)
             scores[rows] = pooled.obs.pop("_score").to_numpy(dtype=float)
         if len(self._gene_set_cache) >= _GENE_SET_CACHE_SIZE:
-            self._gene_set_cache.pop(next(iter(self._gene_set_cache)))
+            _evict_oldest(self._gene_set_cache)
         self._gene_set_cache[key] = (binning, scores)
         return scores
 
@@ -463,16 +490,24 @@ class Dataset:
             self._background_masks[self.gene_filter] = clustering.background_genes(self.adata, self.gene_filter)
         return self._background_masks[self.gene_filter]
 
-    def top_genes(self, rows: np.ndarray | None = None, binning=None, k: int = 5) -> np.ndarray:
+    def top_genes_key(self, rows: np.ndarray | None = None, binning=None, k: int = 5) -> tuple:
+        """What top_genes' result for these arguments depends on (its cache key)."""
+        return (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning),
+                self.gene_filter)
+
+    def top_genes(self, rows: np.ndarray | None = None, binning=None, k: int = 5,
+                  cached_only: bool = False) -> np.ndarray | None:
         """(n, k) var indices of the k most expressed genes of each cell in `rows` (all
         cells if None) - or, given the binning of those cells, of each bin (its cells'
         summed counts if kept, else their mean) - leaving out background genes. -1 where fewer than k genes are expressed.
-        Recent results are cached, so recoloring doesn't recompute them."""
-        key = (k, None if rows is None else hash(rows.tobytes()), None if binning is None else id(binning),
-               self.gene_filter)
+        Recent results are cached, so recoloring doesn't recompute them; with `cached_only`,
+        None unless the result is already cached."""
+        key = self.top_genes_key(rows, binning, k)
         # The binning is kept with the result: binnings can be evicted (hex_binning), and
         # a new one may then reuse the old one's id.
         cached = self._top_genes_cache.get(key)
+        if cached_only:
+            return cached[1] if cached is not None and cached[0] is binning else None
         if cached is None or cached[0] is not binning:
             # Normalizing a bin's summed counts doesn't change their order, so ranking
             # the sums ranks the genes as the normalized bin would.
@@ -482,7 +517,7 @@ class Dataset:
                 X = (binning.sum_matrix if self.counts is not None else binning.mean_matrix) @ X
             self._top_genes_cache.pop(key, None)
             if len(self._top_genes_cache) >= _TOP_GENES_CACHE_SIZE:
-                self._top_genes_cache.pop(next(iter(self._top_genes_cache)))
+                _evict_oldest(self._top_genes_cache)
             cached = self._top_genes_cache[key] = (binning, top_k_per_row(X, k, exclude=self.background_mask()))
         return cached[1]
 

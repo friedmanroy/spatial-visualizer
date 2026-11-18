@@ -12,8 +12,9 @@ import panel as pn
 from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
-from . import alignment, clustering, figure_export, hexbin, hover, spatial_plot
+from . import alignment, background, clustering, figure_export, hexbin, hover, spatial_plot
 from .state import top_k_per_row
+from .collapsible import Collapsible
 from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
 from .color_controls import HINT_STYLE as _HINT_STYLE
@@ -135,7 +136,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         }
 
     renderers = make_renderers(view=CDSView(filter=hidden_bins), **glyph_kwargs)
-    detail_renderers = make_renderers(**{**glyph_kwargs, "source": detail_source})
+    # Zoomed-in cells with no counts, when those are hidden (see apply_filters).
+    detail_filter = BooleanFilter()
+    detail_renderers = make_renderers(view=CDSView(filter=detail_filter), **{**glyph_kwargs, "source": detail_source})
     hover_formatter = hover.add_hover(fig, renderers.values(), source)
     detail_formatter = hover.add_hover(fig, detail_renderers.values(), detail_source)
     # The zoomed-in cells are a subset of what's drawn anyway; leaving them out of the
@@ -242,6 +245,13 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             r.glyph.fill_alpha = event.new
 
     cell_opacity.param.watch(on_opacity_change, "value")
+
+    hide_zero = pn.widgets.Checkbox(name="Hide cells with zero counts", value=False, margin=(8, 5, 0, 5))
+    hide_zero_hint = pn.pane.HTML(
+        "Leaves out the cells (or hexagonal bins) with no counts of the genes shown in the Gene view - "
+        "or, when coloring by a field or pathway, no counts at all.",
+        styles=_HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 25),
+    )
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
     plot_header = pn.pane.HTML("", sizing_mode="stretch_width", margin=(6, 10, 0, 10),
                                styles={"font-size": "14px", "line-height": "1.5"})
@@ -266,13 +276,85 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     def get_active_indices():
         return get_geometry(sample_select.value)[0]
 
-    def current_colors(idx: np.ndarray, binning) -> np.ndarray:
-        # Only the sample's cells (or bins) are colored - and gene colors scaled over
-        # them, the same way for bins and for the individual cells shown when zoomed in.
-        colors = controls.compute_colors(idx, binning)
+    # Only the sample's cells (or bins) are colored - and gene colors scaled over
+    # them, the same way for bins and for the individual cells shown when zoomed in.
+    def finish_colors(colors: np.ndarray, idx: np.ndarray, binning) -> np.ndarray:
         if not len(colors):
             colors = np.full(len(idx) if binning is None else binning.n_bins, GRAY_RGBA)
         return regions_panel.mask_colors(colors, idx, binning)
+
+    def current_colors(idx: np.ndarray, binning, histograms: bool = True) -> np.ndarray:
+        return finish_colors(controls.compute_colors(idx, binning, histograms), idx, binning)
+
+    def current_render(idx: np.ndarray, binning) -> tuple[np.ndarray, dict, dict, np.ndarray | None]:
+        """(colors, hover columns, hover meta, which ones have counts - None unless cells
+        with zero counts are hidden) of what's drawn - the gene / pathway values computed
+        once for all."""
+        colors, hover_cols, hover_meta, counted = controls.render(idx, binning, with_counts=hide_zero.value)
+        return finish_colors(colors, idx, binning), hover_cols, hover_meta, counted
+
+    # -- which drawn markers are hidden (the renderers' BooleanFilters) -----------------
+    # The bins under the zoomed-in cells, and - with hide_zero on - the bins / cells with
+    # no counts of what's shown. None: nothing hidden for that reason.
+    filters = {"main_counted": None, "bins_free": None, "cells_counted": None}
+
+    def apply_filters():
+        main = [m for m in (filters["main_counted"], filters["bins_free"]) if m is not None]
+        hidden_bins.booleans = None if not main else main[0] if len(main) == 1 else main[0] & main[1]
+        detail_filter.booleans = filters["cells_counted"]
+
+    # -- each cell's (bin's) most expressed genes, for the tooltip ----------------------
+    # Slow to compute the first time, so they're filled in after the colors are shown
+    # (background.run_later), and kept while the same cells / bins stay drawn: they
+    # don't depend on what is colored. Per data source: what they were computed for
+    # (key, None: the source's top-gene columns are stale) and their gene names (None
+    # while being computed).
+    top_state = {"main": {"key": None, "names": None}, "detail": {"key": None, "names": None}}
+    top_inflight: set[tuple] = set()  # (which, key) being computed in the background
+
+    def fill_top_genes(which: str, src, formatter, meta: dict, rows: np.ndarray, binning):
+        """Sets the tooltip's `meta`, with the most expressed genes of `rows` (or of
+        `binning`'s bins) once known, if the meta shows them (Gene & Pathway mode)."""
+        st = top_state[which]
+        if "top" not in meta:
+            hover.set_meta(formatter, meta)
+            return
+        k = hover.N_TOP_GENES
+        key = dataset.top_genes_key(rows, binning, k)
+        if st["key"] == key:  # already shown, or being computed
+            hover.set_meta(formatter, {**meta, "top": st["names"]})
+            return
+        st["key"], st["names"] = key, None
+        hover.set_meta(formatter, meta)  # no genes listed until they're known
+
+        def apply(top):
+            if st["key"] != key:  # other cells drawn meanwhile
+                return
+            cols, names = hover.top_gene_columns(top, dataset.adata.var_names)
+            with pn.io.hold():
+                for col, values in cols.items():
+                    src.data[col] = values
+                st["names"] = names
+                current = formatter.args.get("meta", {})
+                if "top" in current:  # still in Gene & Pathway mode
+                    hover.set_meta(formatter, {**current, "top": names})
+
+        cached = dataset.top_genes(rows, binning, k, cached_only=True)
+        if cached is not None:
+            apply(cached)
+        elif (which, key) not in top_inflight:  # else that run's apply fills these columns in
+            top_inflight.add((which, key))
+
+            def done(top):
+                top_inflight.discard((which, key))
+                if top is None:  # failed: try again next time these cells are drawn
+                    if st["key"] == key:
+                        st["key"] = None
+                    return
+                apply(top)
+
+            background.run_later(lambda: dataset.top_genes(rows, binning, k), done,
+                                 doc=fig.document or pn.state.curdoc)
 
     # -- individual cells when zoomed in (hex-binned samples only) --------------------
     # `cells`: the sample-local indices of the cells drawn individually (None: just bins),
@@ -290,7 +372,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def clear_detail():
         detail.update(cells=None, box=None)
-        hidden_bins.booleans = None
+        filters.update(bins_free=None, cells_counted=None)
+        apply_filters()
         if len(detail_source.data["x"]):
             detail_source.data = _empty_detail()
 
@@ -324,15 +407,19 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         idx, coords, _ = get_geometry(sample)
         binning = get_binning(sample)
         if detail["colors"] is None:
-            detail["colors"] = current_colors(idx, None)
+            # The histograms keep showing the hexagons' values (as the bins are colored).
+            detail["colors"] = current_colors(idx, None, histograms=False)
         cells = detail["cells"]
         hover_cols, hover_meta = controls.hover_data(idx[cells])
-        hidden_bins.booleans = ~_in_box(binning.centers, detail["box"])
         detail_source.data = {
             "x": coords[cells, 0].astype(np.float32), "y": coords[cells, 1].astype(np.float32),
             "fill_color": detail["colors"][cells], **hover.empty_columns(len(cells)), **hover_cols,
         }
-        hover.set_meta(detail_formatter, hover_meta)
+        filters.update(bins_free=~_in_box(binning.centers, detail["box"]),
+                       cells_counted=controls.has_counts(idx[cells]) if hide_zero.value else None)
+        apply_filters()
+        top_state["detail"]["key"] = None  # its columns were just replaced
+        fill_top_genes("detail", detail_source, detail_formatter, hover_meta, idx[cells], None)
         update_count(detail["shown"], idx, binning)
 
     def refresh_count():
@@ -426,6 +513,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             unit = "cells" if binning is None else "bins"
             total = len(idx) if binning is None else binning.n_bins
             line1 += f" · <b>{n_shown:,}</b> of {total:,} {unit} in the selected categories"
+        if filters["main_counted"] is not None:
+            n_zero = int(np.count_nonzero(~filters["main_counted"]))
+            line1 += f" · {n_zero:,} {'cells' if binning is None else 'bins'} with zero counts hidden"
         lines = [line1]
         if binning is not None and detail["cells"] is not None:
             note = (f"Showing the {detail['n_view']:,} individual cells in view - "
@@ -450,14 +540,17 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def redraw_full(sample_id: str):
         idx, coords, lattice, binning = get_display(sample_id)
-        colors = current_colors(idx, binning)
-        hover_cols, hover_meta = controls.hover_data(idx, binning)
+        colors, hover_cols, hover_meta, counted = current_render(idx, binning)
+        filters["main_counted"] = None  # (for the old data, until the new data is in)
         clear_detail()  # before the bins change, so the filter never mismatches them
         detail.update(colors=None, shown=colors)
         update_top_genes(view_box())
         source.data = {"x": coords[:, 0], "y": coords[:, 1], "fill_color": colors,
                        **hover.empty_columns(len(coords)), **hover_cols}
-        hover.set_meta(hover_formatter, hover_meta)
+        filters["main_counted"] = counted
+        apply_filters()
+        top_state["main"]["key"] = None  # its columns were just replaced
+        fill_top_genes("main", source, hover_formatter, hover_meta, idx, binning)
         update_markers(lattice)
         update_background()
         update_count(colors, idx, binning)
@@ -465,14 +558,15 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def recolor_only():
         idx, _, _, binning = get_display(sample_select.value)
-        colors = current_colors(idx, binning)
+        colors, hover_cols, hover_meta, counted = current_render(idx, binning)
         # Item assignment (vs. reassigning the whole `.data` dict) makes Bokeh patch
         # just the fill_color column instead of re-sending the unchanged x/y positions.
         source.data["fill_color"] = colors
-        hover_cols, hover_meta = controls.hover_data(idx, binning)
         for key, values in hover_cols.items():
             source.data[key] = values
-        hover.set_meta(hover_formatter, hover_meta)
+        filters["main_counted"] = counted
+        apply_filters()
+        fill_top_genes("main", source, hover_formatter, hover_meta, idx, binning)
         update_background()
         detail.update(colors=None, shown=colors)
         update_count(colors, idx, binning)
@@ -675,11 +769,11 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     state.run_celltyping = run_cell_typing  # for the Cell types tab's own re-run button
 
     leiden_btn.on_click(on_run_leiden)
-    leiden_card = pn.Card(
+    leiden_card = Collapsible(
         leiden_width, leiden_target, hex_filter_box, state.gene_filter.layout, typing.layout,
         pn.Row(leiden_resolution, leiden_btn, sizing_mode="stretch_width"),
         leiden_status, rerun_row, typing_results,
-        title="Leiden clustering & cell types", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
+        title="Leiden clustering & cell types", collapsed=True,
     )
 
     async def on_leiden_card_toggle(event):
@@ -690,9 +784,10 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 typing_results.object = f"<b>Cell typing unavailable:</b> {html.escape(str(exc))}"
 
     leiden_card.param.watch(on_leiden_card_toggle, "collapsed")
-    display_card = pn.Card(
-        bin_toggle, bin_hint, bin_width, bin_width_note, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity, bg_select, bg_orientation,
-        title="Display settings", collapsed=True, sizing_mode="stretch_width", margin=(4, 5),
+    display_card = Collapsible(
+        bin_toggle, bin_hint, bin_width, bin_width_note, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity,
+        hide_zero, hide_zero_hint, bg_select, bg_orientation,
+        title="Display settings", collapsed=True,
     )
 
     def busy_if_slow(sample_id: str, message: str):
@@ -759,6 +854,12 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             refresh_count()
 
     detail_toggle.param.watch(on_detail_setting_change, "value")
+
+    def on_hide_zero(event):
+        with pn.io.hold():
+            recolor_only()
+
+    hide_zero.param.watch(on_hide_zero, "value")
     detail_max.param.watch(on_detail_setting_change, "value")
     prev_btn.on_click(on_prev)
     next_btn.on_click(on_next)
@@ -786,7 +887,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             return None
         x0, x1, y0, y1 = box
         layers, codes = [], []
-        for group, src, drawn in ((renderers, source, hidden_bins.booleans), (detail_renderers, detail_source, None)):
+        for group, src, drawn in ((renderers, source, hidden_bins.booleans), (detail_renderers, detail_source, detail_filter.booleans)):
             shape = next((name for name, r in group.items() if r.visible), None)
             data = src.data
             if shape is None or not len(data["x"]):
