@@ -12,8 +12,9 @@ import panel as pn
 from bokeh.events import RangesUpdate, Tap
 from bokeh.models import BooleanFilter, CDSView, ColumnDataSource, CustomJS
 
-from . import alignment, background, clustering, figure_export, hexbin, hover, spatial_plot
-from .state import top_k_per_row
+from . import add_samples, alignment, background, clustering, figure_export, hexbin, hover, spatial_plot
+from .file_picker import DATA_FILE_PATTERN, build_path_picker
+from .state import ALL_SAMPLES, top_k_per_row
 from .collapsible import Collapsible
 from .color_controls import ColorControls, keep_filled
 from .celltype_controls import results_html
@@ -52,9 +53,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     )
     dataset.hex_filter = state.hex_filter.value  # before anything is drawn
     bin_hint = pn.pane.HTML(
-        f"Much faster for huge samples; on by default above {hexbin.BINNING_THRESHOLD:,} cells. "
-        "Each bin shows a gene's expression from its cells' summed counts, or their most common "
-        "selected category. Bins with too little data are gray - see the Leiden panel's hexagon filter.",
+        f"On by default above {hexbin.BINNING_THRESHOLD:,} cells. Each hexagon pools its cells; gray ones "
+        "have too little data (the hexagon filter, under Leiden).",
         styles=_HINT_STYLE, margin=(0, 5, 2, 25), sizing_mode="stretch_width",
     )
     # Edge lengths are converted to widths in cell spacings with the largest sample's spacing.
@@ -74,21 +74,31 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bin_width_note = pn.pane.HTML("", styles=_HINT_STYLE, margin=(0, 5, 4, 5), sizing_mode="stretch_width",
                                   visible=bin_toggle.value)
 
-    # Zoomed in far enough, the bins give way to the individual cells in view (and a
-    # margin around it, so small pans don't need new data).
+    # The hexagons come in levels, each twice as wide as the one below: the coarsest is drawn
+    # whole, and zoomed in, the finest level (or the individual cells) with at most
+    # `view_max` of them in view takes over the view and a margin around it, so small pans
+    # don't need new data. The finest hexagons are the ones analysed (bin_width).
     detail_toggle = pn.widgets.Checkbox(
-        name="Show individual cells when zoomed in", value=True, visible=bin_toggle.value,
+        name="Show finer hexagons and individual cells when zoomed in", value=True, visible=bin_toggle.value,
         margin=(8, 5, 2, 5),
     )
-    detail_max = pn.widgets.IntInput(
-        name="...once at most this many cells are in view", value=DETAIL_MAX_CELLS,
-        start=1_000, end=1_000_000, step=5_000, sizing_mode="stretch_width",
+    view_max = pn.widgets.IntInput(
+        name="Objects in view at most", value=hexbin.DEFAULT_VIEW_BUDGET,
+        start=1_000, end=1_000_000, step=10_000, sizing_mode="stretch_width",
         visible=bin_toggle.value,
-        description="Lower this if panning or zooming in on individual cells feels sluggish.",
+        description=("How many hexagons or cells are drawn in view at most. Coarser hexagon levels are added "
+                     "until the whole sample needs no more; zooming in switches to finer ones, then to the "
+                     "individual cells. Lower this if panning or zooming feels sluggish."),
     )
 
+    def get_levels(sample_id: str) -> list[hexbin.HexBinning] | None:
+        """The sample's hexagon levels, finest (the ones analysed) first; None if not binned."""
+        return dataset.hex_levels(sample_id, bin_factor(), view_max.value) if bin_toggle.value else None
+
     def get_binning(sample_id: str) -> hexbin.HexBinning | None:
-        return dataset.hex_binning(sample_id, bin_factor()) if bin_toggle.value else None
+        """The hexagons drawn whole: the coarsest level."""
+        levels = get_levels(sample_id)
+        return None if levels is None else levels[-1]
 
     def get_display(sample_id: str):
         """(cell indices, marker positions, marker lattice, binning or None) for a sample."""
@@ -96,11 +106,11 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         binning = get_binning(sample_id)
         if binning is None:
             return idx, coords, lattice, None
-        # Bokeh's ngon at angle 0 is pointy-top, matching hexbin's lattice.
-        bin_lattice = spatial_plot.Lattice(binning.width, 0.0, 0.0, "Hexagons")
-        return idx, binning.centers, bin_lattice, binning
+        return idx, binning.centers, _hex_lattice(binning), binning
 
-    initial_sample = dataset.sample_ids[0]
+    # The first sample - or one just added (state.start_sample), when the tabs are rebuilt.
+    initial_sample = state.start_sample if state.start_sample in dataset.sample_ids else dataset.sample_ids[0]
+    state.start_sample = None
     idx0, coords0, lattice0, _ = get_display(initial_sample)
     source = ColumnDataSource(data={
         "x": coords0[:, 0], "y": coords0[:, 1], "fill_color": np.full(len(coords0), GRAY_RGBA),
@@ -146,8 +156,22 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     # use `renderers` either: it only sees the bins the filter lets through, so with all
     # of them under individual cells there would be no range and nothing would draw.
     extent = fig.scatter(x="x", y="y", source=source, visible=False)
-    fig.x_range.renderers = [extent]
-    fig.y_range.renderers = [extent]
+    # With all samples side by side, each one's name sits in the band above it (sample_grid).
+    # Text is sized in screen pixels, so it's shrunk (or hidden) as the view zooms out to
+    # stay inside that band and its column: it never covers cells.
+    label_source = ColumnDataSource(data=_empty_labels())
+    labels = fig.text(x="x", y="y", text="text", source=label_source, text_align="center",
+                      text_baseline="middle", text_font_size="12px", text_color="#222",
+                      text_font_style="bold")
+    fit_labels = CustomJS(args={"fig": fig, "src": label_source, "glyph": labels.glyph}, code=_FIT_LABELS_JS)
+    for rng in (fig.x_range, fig.y_range):
+        rng.js_on_change("start", fit_labels)
+        rng.js_on_change("end", fit_labels)
+    fig.js_on_change("inner_width", fit_labels)
+    fig.js_on_change("inner_height", fit_labels)
+    label_source.js_on_change("data", fit_labels)
+    fig.x_range.renderers = [extent, labels]
+    fig.y_range.renderers = [extent, labels]
 
     def chosen_shape(lattice) -> str:
         return lattice.shape if marker_shape.value == spatial_plot.AUTO_SHAPE else marker_shape.value
@@ -161,23 +185,30 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 setattr(glyph, prop, value)
 
     def update_markers(lattice):
-        cell_lattice = get_geometry(sample_select.value)[2]
         if bin_toggle.value:
             zoomable = detail_toggle.value
             marker_shape.name = ("Cell shape when zoomed in (Auto: circles)"
                                  if zoomable else "Cell shape (hexagonal bins)")
             marker_shape.disabled = not zoomable
             show_shape(renderers, "Hexagons", lattice)
-            # Zoomed-in cells are drawn as circles unless a shape is picked, so they read
-            # as individual cells rather than more (smaller) hexagonal bins.
-            detail_shape = ("Circles" if marker_shape.value == spatial_plot.AUTO_SHAPE
-                            else marker_shape.value)
         else:
             marker_shape.name = f"Cell shape (detected: {lattice.shape.lower()})"
             marker_shape.disabled = False
             show_shape(renderers, chosen_shape(lattice), lattice)
-            detail_shape = None
-        show_shape(detail_renderers, detail_shape, cell_lattice)
+        update_detail_markers()
+
+    def update_detail_markers():
+        """The zoomed-in layer's shape: its level's hexagons, or the individual cells -
+        drawn as circles unless a shape is picked, so they read as cells rather than more
+        (smaller) hexagons."""
+        level = detail["level"]
+        if not bin_toggle.value or level is None:
+            show_shape(detail_renderers, None, None)
+        elif level == CELLS:
+            shape = "Circles" if marker_shape.value == spatial_plot.AUTO_SHAPE else marker_shape.value
+            show_shape(detail_renderers, shape, get_geometry(sample_select.value)[2])
+        else:
+            show_shape(detail_renderers, "Hexagons", _hex_lattice(get_levels(sample_select.value)[level]))
 
     def on_marker_change(event):
         update_markers(get_display(sample_select.value)[2])
@@ -204,7 +235,8 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     def update_bg_image(*events):
         label = bg_select.value
         bg_orientation.visible = label in bg_images
-        if label not in bg_images:
+        # An image belongs to one sample's positions, which the side-by-side view moves.
+        if label not in bg_images or sample_select.value == ALL_SAMPLES:
             bg_source.data = {"image": [], "x": [], "y": [], "dw": [], "dh": []}
             return
         key = (label, bg_orientation.value)
@@ -248,8 +280,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     hide_zero = pn.widgets.Checkbox(name="Hide cells with zero counts", value=False, margin=(8, 5, 0, 5))
     hide_zero_hint = pn.pane.HTML(
-        "Leaves out the cells (or hexagonal bins) with no counts of the genes shown in the Gene view - "
-        "or, when coloring by a field or pathway, no counts at all.",
+        "No counts of the genes shown (or, coloring by a field or pathway, none at all).",
         styles=_HINT_STYLE, sizing_mode="stretch_width", margin=(0, 5, 4, 25),
     )
     bokeh_pane = pn.pane.Bokeh(fig, sizing_mode="stretch_both")
@@ -258,14 +289,46 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     n_samples = len(dataset.sample_ids)
     sample_select = pn.widgets.Select(
-        name=_sample_label(0, n_samples), options=list(dataset.sample_ids), value=initial_sample,
+        name=_sample_label(initial_sample, dataset.sample_ids),
+        # All samples side by side (sample_grid) can be picked like a sample.
+        options=([ALL_SAMPLES] if n_samples > 1 else []) + list(dataset.sample_ids), value=initial_sample,
         sizing_mode="stretch_width", margin=(5, 2, 5, 2),
     )
     prev_btn = pn.widgets.Button(name="◀", width=36, margin=(23, 0, 5, 5), description="Previous sample / FOV")
     next_btn = pn.widgets.Button(name="▶", width=36, margin=(23, 5, 5, 0), description="Next sample / FOV")
-    # Nothing to navigate when the file wasn't split into samples.
-    sample_nav = pn.Row(prev_btn, sample_select, next_btn, sizing_mode="stretch_width",
-                        visible=n_samples > 1, margin=0)
+    show_all_btn = pn.widgets.Button(
+        name=SHOW_ALL, sizing_mode="stretch_width", margin=(0, 2, 5, 5),
+        description="Puts every sample in view together, side by side, each named above it",
+        visible=n_samples > 1,
+    )
+    add_btn = pn.widgets.Button(
+        name="Add samples…", sizing_mode="stretch_width", margin=(0, 5, 5, 2),
+        description="Adds the samples of another file, read and analysed like the loaded ones",
+    )
+    # Picking a file to add samples from, under the buttons while open.
+    add_path, add_browse, _ = build_path_picker("File to add (.h5ad or .rds)", busy=state.busy,
+                                                file_pattern=DATA_FILE_PATTERN)
+    add_path.sizing_mode, add_browse.width = "stretch_width", 85
+    add_picker = pn.Row(add_path, add_browse, sizing_mode="stretch_width", margin=0)
+    add_go = pn.widgets.Button(name="Add", button_type="primary", width=80, margin=(5, 5, 5, 10))
+    add_cancel = pn.widgets.Button(name="Cancel", button_type="light", width=80, margin=(5, 5, 5, 0))
+    add_status = pn.pane.HTML("", styles=_HINT_STYLE, sizing_mode="stretch_width", margin=(0, 10, 4, 10))
+    add_hint = pn.pane.HTML(_add_hint(dataset), styles=_HINT_STYLE, sizing_mode="stretch_width",
+                            margin=(0, 10, 4, 10))
+    add_panel = pn.Column(add_picker, add_hint, pn.Row(add_go, add_cancel, margin=0), add_status,
+                          sizing_mode="stretch_width", visible=False, margin=(0, 0, 6, 0))
+    # Navigating samples only when the file was split into them.
+    sample_nav = pn.Column(
+        pn.Row(prev_btn, sample_select, next_btn, sizing_mode="stretch_width", visible=n_samples > 1, margin=0),
+        pn.Row(show_all_btn, add_btn, sizing_mode="stretch_width", margin=0),
+        add_panel, sizing_mode="stretch_width", margin=0,
+    )
+    # The sample last shown on its own - what the per-sample panels describe meanwhile.
+    last_single = {"sample": initial_sample}
+
+    def single_sample() -> str:
+        sample = sample_select.value
+        return last_single["sample"] if sample == ALL_SAMPLES else sample
 
     def get_dataset():
         return state.spatial
@@ -286,12 +349,29 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     def current_colors(idx: np.ndarray, binning, histograms: bool = True) -> np.ndarray:
         return finish_colors(controls.compute_colors(idx, binning, histograms), idx, binning)
 
-    def current_render(idx: np.ndarray, binning) -> tuple[np.ndarray, dict, dict, np.ndarray | None]:
+    def current_render(idx: np.ndarray, binning, histograms: bool = True) -> tuple[np.ndarray, dict, dict, np.ndarray | None]:
         """(colors, hover columns, hover meta, which ones have counts - None unless cells
         with zero counts are hidden) of what's drawn - the gene / pathway values computed
         once for all."""
-        colors, hover_cols, hover_meta, counted = controls.render(idx, binning, with_counts=hide_zero.value)
+        colors, hover_cols, hover_meta, counted = controls.render(idx, binning, with_counts=hide_zero.value,
+                                                                  histograms=histograms)
         return finish_colors(colors, idx, binning), hover_cols, hover_meta, counted
+
+    def render_main(idx: np.ndarray, levels) -> tuple[np.ndarray, dict, dict, np.ndarray | None]:
+        """current_render of what's drawn whole (the cells, or the coarsest hexagons), after
+        forgetting the zoomed-in layers' colors. The histograms always show the hexagons
+        analysed, drawn or not."""
+        detail.update(colors=None, renders={})
+        if levels is not None and len(levels) > 1:
+            detail["renders"][0] = current_render(idx, levels[0])
+            return current_render(idx, levels[-1], histograms=False)
+        return current_render(idx, None if levels is None else levels[-1])
+
+    def level_render(idx: np.ndarray, levels, k: int):
+        """current_render of all of level `k`'s hexagons, kept until the next recolor."""
+        if k not in detail["renders"]:
+            detail["renders"][k] = current_render(idx, levels[k], histograms=False)
+        return detail["renders"][k]
 
     # -- which drawn markers are hidden (the renderers' BooleanFilters) -----------------
     # The bins under the zoomed-in cells, and - with hide_zero on - the bins / cells with
@@ -356,12 +436,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             background.run_later(lambda: dataset.top_genes(rows, binning, k), done,
                                  doc=fig.document or pn.state.curdoc)
 
-    # -- individual cells when zoomed in (hex-binned samples only) --------------------
-    # `cells`: the sample-local indices of the cells drawn individually (None: just bins),
-    # `box`: the region they cover, `colors`: every cell's color (computed when first
-    # needed after a recolor, so panning only has to index it).
-    detail = {"cells": None, "box": None, "n_view": 0, "colors": None, "timer": None,
-              "shown": None, "top_genes": []}
+    # -- finer hexagons / individual cells when zoomed in (hex-binned samples only) ----
+    # `level`: what's drawn zoomed in - CELLS, the index of a finer hexagon level, or None
+    # (just the coarsest hexagons); `items`: the sample-local indices of the cells, or of
+    # that level's hexagons, drawn; `box`: the region they cover; `n_view`: how many are in
+    # view. `colors`: every cell's color and `renders`: level -> its hexagons' current_render
+    # (computed when first needed after a recolor, so panning only has to index them).
+    detail = {"level": None, "items": None, "box": None, "n_view": 0, "colors": None, "renders": {},
+              "timer": None, "shown": None, "top_genes": []}
 
     def view_box():
         xr, yr = fig.x_range, fig.y_range
@@ -371,70 +453,124 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         return min(ends[:2]), max(ends[:2]), min(ends[2:]), max(ends[2:])
 
     def clear_detail():
-        detail.update(cells=None, box=None)
+        level_changed = detail["level"] is not None
+        detail.update(level=None, items=None, box=None)
         filters.update(bins_free=None, cells_counted=None)
         apply_filters()
         if len(detail_source.data["x"]):
             detail_source.data = _empty_detail()
+        if level_changed:
+            update_detail_markers()
+
+    def zoom_level(levels, coords: np.ndarray, box) -> tuple[int | None, int]:
+        """(what to draw zoomed in on `box`: CELLS, the finest hexagon level below the
+        coarsest, or None - whichever is finest with at most view_max of them in view;
+        how many that is)."""
+        n = int(np.count_nonzero(_in_box(coords, box)))
+        if n <= view_max.value:
+            return CELLS, n
+        for k, level in enumerate(levels[:-1]):
+            n = int(np.count_nonzero(_in_box(level.centers, box)))
+            if n <= view_max.value:
+                return k, n
+        return None, 0
 
     def update_detail(box, force: bool = False):
-        """Shows the individual cells in and around `box` (the current view) if there
-        are few enough of them in view, else just the bins. Without `force`, cells
-        already drawn are kept while the view stays inside the region they cover."""
+        """Shows the finest hexagons (or individual cells) in and around `box` (the current
+        view) with few enough of them in view, else just the coarsest hexagons. Without
+        `force`, what's drawn is kept while it's still the level to show and the view stays
+        inside the region it covers."""
         sample = sample_select.value
-        binning = get_binning(sample)
-        if binning is None or not detail_toggle.value or box is None:
+        levels = get_levels(sample)
+        if levels is None or not detail_toggle.value or box is None:
             clear_detail()
             return
         _, coords, _ = get_geometry(sample)
-        detail["n_view"] = int(np.count_nonzero(_in_box(coords, box)))
-        if detail["n_view"] > detail_max.value:
-            if detail["cells"] is not None:
+        level, detail["n_view"] = zoom_level(levels, coords, box)
+        if level is None:
+            if detail["level"] is not None:
                 clear_detail()
                 refresh_count()
             return
-        if not force and detail["box"] is not None and _box_contains(detail["box"], box):
+        if (not force and level == detail["level"] and detail["box"] is not None
+                and _box_contains(detail["box"], box)):
             refresh_count()
             return
         x0, x1, y0, y1 = box
         mx, my = (x1 - x0) * DETAIL_MARGIN, (y1 - y0) * DETAIL_MARGIN
         detail["box"] = (x0 - mx, x1 + mx, y0 - my, y1 + my)
-        detail["cells"] = np.flatnonzero(_in_box(coords, detail["box"]))
+        level_changed = level != detail["level"]
+        detail["level"] = level
+        # Hexagons reaching into the region count too, so it's covered to its edges.
+        if level == CELLS:
+            detail["items"] = np.flatnonzero(_in_box(coords, detail["box"]))
+        else:
+            fine = levels[level]
+            detail["items"] = np.flatnonzero(_in_box(fine.centers, _grow(detail["box"], fine.width / np.sqrt(3))))
         draw_detail()
+        if level_changed:
+            update_detail_markers()
 
     def draw_detail():
         sample = sample_select.value
         idx, coords, _ = get_geometry(sample)
-        binning = get_binning(sample)
-        if detail["colors"] is None:
-            # The histograms keep showing the hexagons' values (as the bins are colored).
-            detail["colors"] = current_colors(idx, None, histograms=False)
-        cells = detail["cells"]
-        hover_cols, hover_meta = controls.hover_data(idx[cells])
+        levels = get_levels(sample)
+        items, level = detail["items"], detail["level"]
+        if level == CELLS:
+            if detail["colors"] is None:
+                # The histograms keep showing the hexagons' values.
+                detail["colors"] = current_colors(idx, None, histograms=False)
+            colors = detail["colors"][items]
+            hover_cols, hover_meta = controls.hover_data(idx[items])
+            counted = controls.has_counts(idx[items]) if hide_zero.value else None
+            points, rows, top_binning = coords[items], idx[items], None
+        else:
+            binning = levels[level]
+            all_colors, all_hover, hover_meta, all_counted = level_render(idx, levels, level)
+            colors = all_colors[items]
+            hover_cols = {key: np.asarray(values)[items] for key, values in all_hover.items()}
+            counted = None if all_counted is None else all_counted[items]
+            drawn = np.zeros(binning.n_bins, dtype=bool)
+            drawn[items] = True
+            # The tooltip's most expressed genes, of just the hexagons drawn.
+            cells, top_binning = binning.subset(drawn)
+            points, rows = binning.centers[items], idx[cells]
         detail_source.data = {
-            "x": coords[cells, 0].astype(np.float32), "y": coords[cells, 1].astype(np.float32),
-            "fill_color": detail["colors"][cells], **hover.empty_columns(len(cells)), **hover_cols,
+            "x": points[:, 0].astype(np.float32), "y": points[:, 1].astype(np.float32),
+            "fill_color": colors, **hover.empty_columns(len(items)), **hover_cols,
         }
-        filters.update(bins_free=~_in_box(binning.centers, detail["box"]),
-                       cells_counted=controls.has_counts(idx[cells]) if hide_zero.value else None)
+        # Every coarsest hexagon reaching into the region is hidden, not only those centered in
+        # it: they can be larger than the view, and would show between the cells.
+        coarsest = levels[-1]
+        filters.update(bins_free=~_in_box(coarsest.centers, _grow(detail["box"], coarsest.width / np.sqrt(3))),
+                       cells_counted=counted)
         apply_filters()
         top_state["detail"]["key"] = None  # its columns were just replaced
-        fill_top_genes("detail", detail_source, detail_formatter, hover_meta, idx[cells], None)
-        update_count(detail["shown"], idx, binning)
+        fill_top_genes("detail", detail_source, detail_formatter, hover_meta, rows, top_binning)
+        update_count(detail["shown"], idx, levels[-1])
 
     def refresh_count():
         idx, _, _, binning = get_display(sample_select.value)
         update_count(detail["shown"], idx, binning)
 
-    def on_ranges_update(event):
+    def settle_later(box):
         """Waits for the view to settle (each step of a pan/zoom fires this) first."""
         doc = fig.document or pn.state.curdoc
         if detail["timer"] is not None:
             with contextlib.suppress(ValueError):
                 doc.remove_timeout_callback(detail["timer"])
-        box = (min(event.x0, event.x1), max(event.x0, event.x1),
-               min(event.y0, event.y1), max(event.y0, event.y1))
         detail["timer"] = doc.add_timeout_callback(lambda: settle(box), DETAIL_DEBOUNCE_MS)
+
+    def on_ranges_update(event):
+        settle_later((min(event.x0, event.x1), max(event.x0, event.x1),
+                      min(event.y0, event.y1), max(event.y0, event.y1)))
+
+    def on_range_change(attr, old, new):
+        # The view also moves without a pan or zoom: fitting new data (another sample, or
+        # all of them side by side) only changes the ranges.
+        box = view_box()
+        if box is not None:
+            settle_later(box)
 
     def update_top_genes(box):
         """The genes with the highest mean expression over the cells in `box` (the
@@ -459,27 +595,34 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             refresh_count()
 
     fig.on_event(RangesUpdate, on_ranges_update)
+    for rng in (fig.x_range, fig.y_range):
+        rng.on_change("start", on_range_change)
+        rng.on_change("end", on_range_change)
 
     def top_genes_at(x: float, y: float, k: int) -> list[str]:
         """The k most expressed genes of the cell - or, where bins are drawn, the bin -
         under (x, y); empty if there's none there."""
         sample = sample_select.value
         idx, coords, lattice = get_geometry(sample)
-        binning = get_binning(sample)
+        levels = get_levels(sample)
         point = np.array([[x, y]])
-        on_cells = binning is None or (detail["cells"] is not None and _in_box(point, detail["box"])[0])
+        zoomed = detail["items"] is not None and _in_box(point, detail["box"])[0]
+        level = detail["level"] if zoomed else None
+        on_cells = levels is None or level == CELLS
         if on_cells:
-            candidates = np.arange(len(idx)) if binning is None else detail["cells"]
+            candidates = np.arange(len(idx)) if levels is None else detail["items"]
             centers, reach = coords[candidates], lattice.spacing * max(marker_scale.value, 1.0)
         else:
-            centers, reach = binning.centers, binning.width
+            binning = levels[-1] if level is None else levels[level]
+            candidates = np.arange(binning.n_bins) if level is None else detail["items"]
+            centers, reach = binning.centers[candidates], binning.width
         if len(centers) == 0:
             return []
         dist2 = ((centers - point) ** 2).sum(axis=1)
         j = int(np.argmin(dist2))
         if dist2[j] > reach ** 2:
             return []
-        rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == j]
+        rows = idx[[candidates[j]]] if on_cells else idx[binning.cell_bin == candidates[j]]
         # A bin's summed counts (the order normalizing it would give), else its cells' mean.
         source = dataset.counts if not on_cells and dataset.counts is not None else dataset.adata.X
         profile = np.asarray(source[rows].mean(axis=0), dtype=float).reshape(1, -1)
@@ -508,42 +651,62 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         sample = sample_select.value
         where = f"<b>{html.escape(sample)}</b> · " if n_samples > 1 else ""
         line1 = f"{where}{len(idx):,} cells · {controls.coloring_summary_html()}"
+        unit = "cells" if binning is None else "hexagons"
         if controls.mode.value == "Field" and controls.field_select.value:
             n_shown = int(np.sum(colors != GRAY_RGBA))
-            unit = "cells" if binning is None else "bins"
             total = len(idx) if binning is None else binning.n_bins
-            line1 += f" · <b>{n_shown:,}</b> of {total:,} {unit} in the selected categories"
+            if n_shown < total:  # (only worth saying while some are left out)
+                line1 += f" · <b>{n_shown:,}</b> of {total:,} {unit} in the selected categories"
         if filters["main_counted"] is not None:
             n_zero = int(np.count_nonzero(~filters["main_counted"]))
-            line1 += f" · {n_zero:,} {'cells' if binning is None else 'bins'} with zero counts hidden"
+            line1 += f" · {n_zero:,} {unit} with zero counts hidden"
         lines = [line1]
-        if binning is not None and detail["cells"] is not None:
-            note = (f"Showing the {detail['n_view']:,} individual cells in view - "
-                    "zoom out for hexagonal bins")
-        elif binning is not None:
-            note = (f"Shown as {binning.n_bins:,} hexagonal bins "
-                    f"(~{len(idx) / binning.n_bins:.1f} cells each)")
-            n_left_out = binning.n_bins - int(dataset.kept_bins(idx, binning).sum())
-            if n_left_out:
-                note += f", {n_left_out:,} left out for too little data"
-            if detail_toggle.value:
-                note += f" - zoom in to under {detail_max.value:,} cells in view to see individual cells"
-            note += " - change under Display settings"
+        # Gray lines under it: the hexagon level, and the genes most expressed in view.
+        gray = '<span style="color:#555;font-size:13px">{}</span>'
         if binning is not None:
-            lines.append(f'<span style="color:#555;font-size:13px">{note}</span>')
+            lines.append(gray.format(level_note(idx)))
         if detail["top_genes"]:
-            genes = ", ".join(f"<b>{html.escape(g)}</b>" for g in detail["top_genes"])
-            lines.append(f'<span style="color:#555;font-size:13px">Most expressed in view: {genes}</span>')
+            lines.append(gray.format("Most expressed in view: "
+                                     + ", ".join(f"<b>{html.escape(g)}</b>" for g in detail["top_genes"])))
         if regions_line := regions_panel.header_html():
             lines.append(regions_line)
         plot_header.object = "<br>".join(lines)
 
+    def level_note(idx: np.ndarray) -> str:
+        """One line under the header: which hexagon level (or the cells) is shown."""
+        levels = get_levels(sample_select.value)
+        n_levels, level, n_view = len(levels), detail["level"], detail["n_view"]
+
+        def describe(k: int) -> str:
+            b = levels[k]
+            text = f"~{len(idx) / b.n_bins:.3g} cells each, {b.width / np.sqrt(3):.3g} pts edges"
+            if n_levels > 1:
+                text += f" · level {n_levels - k} of {n_levels}"
+                if k == 0 and dataset.analysis_width is not None:  # (else cells are analysed)
+                    text += " (analysed)"
+            return text
+
+        if level == CELLS:
+            return f"{n_view:,} individual cells in view · zoom out for hexagons"
+        if level is not None:
+            finer = "finer hexagons" if level > 0 else "cells"
+            return f"{n_view:,} hexagons in view · {describe(level)} · zoom in for {finer}"
+        coarsest = levels[-1]
+        note = f"{coarsest.n_bins:,} hexagons · {describe(n_levels - 1)}"
+        n_left_out = coarsest.n_bins - int(dataset.kept_bins(idx, coarsest).sum())
+        if n_left_out:
+            note += f" · {n_left_out:,} gray (too little data)"
+        if detail_toggle.value:
+            note += f" · zoom in for {'finer hexagons' if n_levels > 1 else 'cells'}"
+        return note
+
     def redraw_full(sample_id: str):
+        label_source.data = _grid_labels(dataset.sample_grid()) if sample_id == ALL_SAMPLES else _empty_labels()
         idx, coords, lattice, binning = get_display(sample_id)
-        colors, hover_cols, hover_meta, counted = current_render(idx, binning)
+        colors, hover_cols, hover_meta, counted = render_main(idx, get_levels(sample_id))
         filters["main_counted"] = None  # (for the old data, until the new data is in)
         clear_detail()  # before the bins change, so the filter never mismatches them
-        detail.update(colors=None, shown=colors)
+        detail["shown"] = colors
         update_top_genes(view_box())
         source.data = {"x": coords[:, 0], "y": coords[:, 1], "fill_color": colors,
                        **hover.empty_columns(len(coords)), **hover_cols}
@@ -558,7 +721,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def recolor_only():
         idx, _, _, binning = get_display(sample_select.value)
-        colors, hover_cols, hover_meta, counted = current_render(idx, binning)
+        colors, hover_cols, hover_meta, counted = render_main(idx, get_levels(sample_select.value))
         # Item assignment (vs. reassigning the whole `.data` dict) makes Bokeh patch
         # just the fill_color column instead of re-sending the unchanged x/y positions.
         source.data["fill_color"] = colors
@@ -568,9 +731,9 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
         apply_filters()
         fill_top_genes("main", source, hover_formatter, hover_meta, idx, binning)
         update_background()
-        detail.update(colors=None, shown=colors)
+        detail["shown"] = colors
         update_count(colors, idx, binning)
-        if detail["cells"] is not None:
+        if detail["items"] is not None:
             draw_detail()
 
     controls = ColorControls(
@@ -641,11 +804,14 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     leiden_target = pn.pane.HTML("", margin=(0, 5), styles=_HINT_STYLE, sizing_mode="stretch_width")
     hex_filter_box = pn.Column(state.hex_filter.layout, sizing_mode="stretch_width", margin=0, visible=hexes)
     # Before any other watcher: an emptied number box gets its last value back.
-    keep_filled(bin_width, detail_max, leiden_resolution, leiden_width)
+    keep_filled(bin_width, view_max, leiden_resolution, leiden_width)
 
     def width_note(factor) -> str:
-        sample = sample_select.value
-        return hexbin.width_note(dataset.sample_extent(sample), dataset.sample_lattice(sample).spacing, factor)
+        # Edge lengths are per sample: with all of them side by side, the last one shown alone.
+        sample = single_sample()
+        subject = "This sample" if sample_select.value != ALL_SAMPLES else html.escape(sample)
+        return hexbin.width_note(dataset.sample_extent(sample), dataset.sample_lattice(sample).spacing, factor,
+                                 subject=subject)
 
     def update_bin_width_note(*events):
         bin_width_note.object = width_note(bin_factor())
@@ -665,7 +831,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     def update_hex_filter_info(*events):
         if hexes:
-            state.hex_filter.show(dataset, sample_select.value, leiden_factor(), dataset.cell_totals())
+            state.hex_filter.show(dataset, single_sample(), leiden_factor(), dataset.cell_totals())
 
     update_leiden_target()
     update_bin_width_note()
@@ -785,7 +951,7 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     leiden_card.param.watch(on_leiden_card_toggle, "collapsed")
     display_card = Collapsible(
-        bin_toggle, bin_hint, bin_width, bin_width_note, detail_toggle, detail_max, marker_shape, marker_scale, cell_opacity,
+        bin_toggle, bin_hint, bin_width, bin_width_note, detail_toggle, view_max, marker_shape, marker_scale, cell_opacity,
         hide_zero, hide_zero_hint, bg_select, bg_orientation,
         title="Display settings", collapsed=True,
     )
@@ -798,10 +964,48 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             return contextlib.nullcontext()
         return state.busy.show(message, f"{n:,} cells")
 
+    # All samples together can be too many cells to draw one by one even when each sample
+    # isn't: hexagons are then turned on for them, and off again for a single sample -
+    # unless the checkbox was changed meanwhile, which makes it the user's choice.
+    # `quiet`: changes set here whose (asynchronous) watcher is still to come.
+    auto_binned = {"on": False, "quiet": 0}
+
+    def set_binning_quietly(value: bool):
+        auto_binned["quiet"] += 1
+        bin_toggle.value = value
+        update_binning_widgets()
+
+    def fit_view(sample_id: str):
+        """Fits the view to the sample's cells (and names): needed when switching between a
+        sample and all of them side by side, whose positions have nothing in common."""
+        coords = dataset.sample_coords(sample_id)
+        if not len(coords):
+            return
+        (x0, y0), (x1, y1) = coords.min(axis=0), coords.max(axis=0)
+        if sample_id == ALL_SAMPLES:
+            y0 -= dataset.sample_grid().pad  # the name band above the first row
+        mx, my = (x1 - x0) * 0.05 or 1.0, (y1 - y0) * 0.05 or 1.0
+        fig.x_range.update(start=float(x0 - mx), end=float(x1 + mx))
+        # The y axis points down (y_range.flipped): its range runs from the bottom up.
+        fig.y_range.update(start=float(y1 + my), end=float(y0 - my))
+
     async def on_sample_change(event):
-        sample_select.name = _sample_label(dataset.sample_ids.index(event.new), n_samples)
+        sample_select.name = _sample_label(event.new, dataset.sample_ids)
+        if event.new != ALL_SAMPLES:
+            last_single["sample"] = event.new
+        show_all_btn.name = SHOW_ONE if event.new == ALL_SAMPLES else SHOW_ALL
+        if (event.new == ALL_SAMPLES and not bin_toggle.value
+                and len(dataset.sample_indices(ALL_SAMPLES)) > hexbin.BINNING_THRESHOLD):
+            auto_binned["on"] = True
+            set_binning_quietly(True)
+        elif event.new != ALL_SAMPLES and auto_binned["on"]:
+            auto_binned["on"] = False
+            set_binning_quietly(False)
         async with busy_if_slow(event.new, f"Drawing {event.new}..."):
             with pn.io.hold():
+                if ALL_SAMPLES in (event.old, event.new):
+                    fit_view(event.new)
+                update_bg_image()
                 update_bin_width_note()
                 update_leiden_target()
                 update_hex_filter_info()
@@ -811,21 +1015,66 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
                 redraw_full(event.new)
 
     def on_prev(event):
-        i = dataset.sample_ids.index(sample_select.value)
-        if i > 0:
-            sample_select.value = dataset.sample_ids[i - 1]
+        ids = dataset.sample_ids
+        if sample_select.value == ALL_SAMPLES:  # from all of them: the last one
+            sample_select.value = ids[-1]
+        elif (i := ids.index(sample_select.value)) > 0:
+            sample_select.value = ids[i - 1]
 
     def on_next(event):
-        i = dataset.sample_ids.index(sample_select.value)
-        if i < len(dataset.sample_ids) - 1:
-            sample_select.value = dataset.sample_ids[i + 1]
+        ids = dataset.sample_ids
+        if sample_select.value == ALL_SAMPLES:  # from all of them: the first one
+            sample_select.value = ids[0]
+        elif (i := ids.index(sample_select.value)) < len(ids) - 1:
+            sample_select.value = ids[i + 1]
+
+    def on_show_all(event):
+        """Shows all samples side by side - or, while they are, the last one shown alone."""
+        showing_all = sample_select.value == ALL_SAMPLES
+        sample_select.value = last_single["sample"] if showing_all else ALL_SAMPLES
+
+    show_all_btn.on_click(on_show_all)
+
+    def on_add_toggle(event):
+        add_panel.visible = not add_panel.visible
+        add_status.object = ""
+
+    async def on_add(event):
+        path = add_path.value.strip()
+        if not path or not os.path.exists(path):
+            add_status.object = "<b>File not found.</b>" if path else "Enter or browse to a file first."
+            return
+        add_status.object = ""
+        try:
+            async with state.busy.show("Adding samples...", path):
+                new = await asyncio.to_thread(add_samples.read_like, path, dataset, state.busy.step)
+                combined, added = await asyncio.to_thread(add_samples.combine, dataset, new, path, state.busy.step)
+                del new
+                if "PC1" in dataset.signed_fields:  # so they cover the new cells too
+                    gene_filter = state.gene_filter.value
+                    await state.busy.step_now("Computing the principal components again, over every sample")
+                    for col in await asyncio.to_thread(clustering.add_principal_components, combined,
+                                                       report=state.busy.step, gene_filter=gene_filter):
+                        combined.add_field(col)
+                await state.busy.step_now("Opening the viewer on all the samples")
+                state.spatial = combined
+                state.start_sample = added[0] if added else None
+                state.rebuild_viewer()
+        except Exception as exc:
+            print_exception()
+            add_status.object = f"<b>Couldn't add the samples:</b> {html.escape(str(exc))}"
+
+    add_btn.on_click(on_add_toggle)
+    add_cancel.on_click(on_add_toggle)
+    add_go.on_click(on_add)
 
     sample_select.param.watch(on_sample_change, "value")
 
     def on_alignment(sample_id: str):
         """The Align image tab moved the sample's cells (or put them back)."""
         geom_cache.pop(sample_id, None)
-        if sample_id != sample_select.value:
+        geom_cache.pop(ALL_SAMPLES, None)  # it's laid out anew too
+        if sample_select.value not in (sample_id, ALL_SAMPLES):
             return
         with pn.io.hold():
             update_bin_width_note()
@@ -835,9 +1084,17 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
 
     state.alignment_listeners.append(on_alignment)
 
-    async def on_binning_change(event):
-        bin_width.visible = bin_width_note.visible = detail_toggle.visible = detail_max.visible = bin_toggle.value
+    def update_binning_widgets():
+        bin_width.visible = bin_width_note.visible = detail_toggle.visible = view_max.visible = bin_toggle.value
         regions_panel.update_hex_width()
+
+    async def on_binning_change(event):
+        if event.obj is bin_toggle and auto_binned["quiet"]:  # the sample change that set it redraws
+            auto_binned["quiet"] -= 1
+            return
+        if event.obj is bin_toggle:
+            auto_binned["on"] = False  # the user's choice now
+        update_binning_widgets()
         message = "Grouping cells into hexagonal bins..." if bin_toggle.value else "Drawing individual cells..."
         async with busy_if_slow(sample_select.value, message):
             with pn.io.hold():
@@ -846,9 +1103,17 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     bin_toggle.param.watch(on_binning_change, "value")
     bin_width.param.watch(on_binning_change, "value")
 
+    async def on_view_max_change(event):
+        # The coarsest level drawn whole depends on it, as well as when finer ones take over.
+        if bin_toggle.value:
+            async with busy_if_slow(sample_select.value, "Grouping cells into hexagon levels..."):
+                with pn.io.hold():
+                    redraw_full(sample_select.value)
+
+    view_max.param.watch(on_view_max_change, "value")
+
     def on_detail_setting_change(event):
         with pn.io.hold():
-            detail_max.disabled = not detail_toggle.value
             update_markers(get_display(sample_select.value)[2])
             update_detail(view_box(), force=True)
             refresh_count()
@@ -860,7 +1125,6 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             recolor_only()
 
     hide_zero.param.watch(on_hide_zero, "value")
-    detail_max.param.watch(on_detail_setting_change, "value")
     prev_btn.on_click(on_prev)
     next_btn.on_click(on_next)
 
@@ -964,6 +1228,23 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
     return pn.Row(sidebar, plot_area, sizing_mode="stretch_both")
 
 
+#: the button next to the sample picker, while one sample is shown / all of them are
+SHOW_ALL, SHOW_ONE = "Show all samples", "Show one sample"
+#: Fits the sample names (label_source) in the band above each sample: at most 16 px tall,
+#: no taller than 70% of the band and no wider than the sample's column (guessing a
+#: character is 0.6 em wide) - hidden when that's under 5 px.
+_FIT_LABELS_JS = """
+const d = src.data;
+if (!d.text || !d.text.length) return;
+const xr = fig.x_range, yr = fig.y_range;
+const sx = fig.inner_width / Math.abs(xr.end - xr.start);
+const sy = fig.inner_height / Math.abs(yr.end - yr.start);
+if (!isFinite(sx) || !isFinite(sy) || sx <= 0 || sy <= 0) return;
+let px = Math.min(16, 0.7 * d.pad[0] * sy);
+for (let i = 0; i < d.text.length; i++)
+    px = Math.min(px, d.room[i] * sx / (0.6 * Math.max(1, d.text[i].length)));
+glyph.text_font_size = {value: (px >= 5 ? px.toFixed(1) : 0) + 'px'};
+"""
 #: the coloring controls never shrink below this (px) to make room for opened panels
 _MIN_COLORING_HEIGHT = 340
 #: samples with at least this many cells get the "working..." overlay while redrawing
@@ -974,9 +1255,9 @@ CLICK_GENES = 3
 N_TOP_GENES = 4
 #: the header's most-expressed genes are averaged over at most this many cells in view
 TOP_GENES_MAX_CELLS = 50_000
-#: default for how few cells must be in view for hex-binned samples to show them individually
-DETAIL_MAX_CELLS = 200_000
-#: individual cells are fetched for the view plus this fraction of its size on each side
+#: detail["level"] meaning the individual cells are drawn zoomed in
+CELLS = -1
+#: zoomed-in hexagons / cells are fetched for the view plus this fraction of its size on each side
 DETAIL_MARGIN = 0.25
 #: the view must stay still this long (ms) before the individual cells are fetched
 DETAIL_DEBOUNCE_MS = 200
@@ -1001,6 +1282,11 @@ clicks.data = {x: [cb_obj.x], y: [cb_obj.y], t: [Date.now()]};
 """
 
 
+def _hex_lattice(binning) -> spatial_plot.Lattice:
+    """Marker geometry of `binning`'s hexagons (Bokeh's ngon at angle 0 is pointy-top, as they are)."""
+    return spatial_plot.Lattice(binning.width, 0.0, 0.0, "Hexagons")
+
+
 def _empty_detail() -> dict:
     return {"x": np.zeros(0, np.float32), "y": np.zeros(0, np.float32),
             "fill_color": np.zeros(0, np.uint32), **hover.empty_columns(0)}
@@ -1012,9 +1298,47 @@ def _in_box(coords: np.ndarray, box) -> np.ndarray:
     return (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
 
 
+def _grow(box, d: float):
+    """`box` with `d` added on every side."""
+    x0, x1, y0, y1 = box
+    return x0 - d, x1 + d, y0 - d, y1 + d
+
+
 def _box_contains(outer, inner) -> bool:
     return outer[0] <= inner[0] and inner[1] <= outer[1] and outer[2] <= inner[2] and inner[3] <= outer[3]
 
 
-def _sample_label(i: int, n: int) -> str:
-    return f"Sample / FOV ({i + 1} of {n})"
+def _sample_label(sample: str, sample_ids: list[str]) -> str:
+    if sample == ALL_SAMPLES:
+        return f"Sample / FOV (all {len(sample_ids)})"
+    return f"Sample / FOV ({sample_ids.index(sample) + 1} of {len(sample_ids)})"
+
+
+def _add_hint(dataset) -> str:
+    """What "Add samples" does with a file, for this data."""
+    if dataset.counts is None:
+        how = "its values used as they are"
+    elif dataset.normalized_spots:
+        how = "its raw counts normalized cell by cell"
+    else:
+        how = "its raw counts summed into hexagons"
+    if dataset.pooled_from is not None:
+        how = "its spots pooled into hexagons, " + how
+    if dataset.sample_col:
+        where = (f"Its samples are those of its <code>{html.escape(dataset.sample_col)}</code> column if it has "
+                 "one, else the whole file is one sample.")
+    else:
+        where = "The whole file becomes one sample, named after it."
+    return (f"Read like the loaded file: {how}. {where} Clusterings and cell types won't cover the new "
+            "cells until they're run again.")
+
+
+def _empty_labels() -> dict:
+    return {"x": [], "y": [], "text": [], "room": [], "pad": []}
+
+
+def _grid_labels(grid) -> dict:
+    """label_source data naming each sample above it (sample_grid.SampleGrid.labels)."""
+    names, xs, ys, rooms = zip(*grid.labels) if grid.labels else ((), (), (), ())
+    return {"x": list(xs), "y": list(ys), "text": list(names), "room": list(rooms),
+            "pad": [grid.pad] * len(names)}

@@ -118,10 +118,10 @@ def save(dataset, path: str, pathways: dict, regions=None, regions_column: str |
 
 
 def h5ad_save_controls(get_dataset, get_pathways, get_regions, busy) -> tuple[pn.widgets.Button, pn.pane.HTML]:
-    """(the red "Save .h5ad…" button, status line to place under it). `get_regions()`
+    """(the "Save .h5ad…" button, status line to place under it). `get_regions()`
     returns (regions.Regions or None, the obs column to save them as)."""
     button = pn.widgets.Button(
-        name="Save .h5ad…", button_type="danger", width=120, margin=(8, 10, 0, 0),
+        name="Save .h5ad…", width=120, margin=(8, 10, 0, 0),
         description="Saves the data with everything the viewer added - clusterings, cell types, "
                     "principal components, pathway scores and drawn regions - as a new .h5ad",
     )

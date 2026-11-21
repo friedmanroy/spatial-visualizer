@@ -43,8 +43,18 @@ def build() -> pn.viewable.Viewable:
     state.gene_filter = GeneFilterControls()
     state.hex_filter = HexFilterControls()
     root = pn.Column(sizing_mode="stretch_both")
+    # What's listening before the viewer's tabs are built: a rebuild drops what the old tabs added.
+    listener_lists = [state.pathway_listeners, state.field_listeners, state.celltype_listeners,
+                      state.alignment_listeners, state.image_listeners, state.gene_filter.listeners,
+                      state.hex_filter.listeners]
+    baseline = {}
 
     def show_viewer():
+        if baseline:  # rebuilt (e.g. samples were added): the old tabs are let go
+            for lst in listener_lists:
+                del lst[baseline[id(lst)]:]
+        else:
+            baseline.update({id(lst): len(lst) for lst in listener_lists})
         # Before anything is drawn or any saved region is placed: they're in the aligned coordinates.
         alignment.restore_from_cache(state.spatial)
         spatial_tab = build_spatial_page(state)
@@ -65,6 +75,7 @@ def build() -> pn.viewable.Viewable:
         root.styles = {"position": "relative"}
         root[:] = [tabs, window_btn, window_status]
 
+    state.rebuild_viewer = show_viewer
     landing = build_landing(state, on_ready=show_viewer)
     root.sizing_mode = "stretch_width"
     root[:] = [landing]

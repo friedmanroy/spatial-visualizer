@@ -159,12 +159,7 @@ def _write_coords(dataset, sample: str, coords: np.ndarray):
         spatial = spatial.astype(np.float64)
     spatial[dataset.sample_indices(sample), :2] = coords
     obsm["spatial"] = spatial
-    # Whatever was measured on the old positions.
-    with dataset.split_lock:
-        dataset._lattice_cache.pop(sample, None)
-        with dataset._binning_lock:
-            for key in [k for k in dataset._binning_cache if k[0] == sample]:
-                del dataset._binning_cache[key]
+    dataset.forget_sample_geometry(sample)  # whatever was measured on the old positions
 
 
 def apply(dataset, sample: str, M: np.ndarray, image: str):

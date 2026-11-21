@@ -19,6 +19,7 @@ from . import fields as fields_mod
 from . import histogram as histogram_mod
 from . import hover
 from . import pathways as pathways_mod
+from .state import ALL_SAMPLES
 
 GRAY = colors_mod.GRAY
 
@@ -331,9 +332,17 @@ class ColorControls:
     @staticmethod
     def _bin_pathway_values(dataset, name: str, values, idx, binning, mask, pathways):
         """Per-bin values of a pathway channel (see _pathway_values): each hexagon's score
-        on its pooled profile, or its cells' mean score."""
+        on its pooled profile, or its cells' mean score. A coarser display level's hexagons
+        get their analysis hexagons' scores averaged (over their cells), rather than being
+        pooled and scored again."""
         if isinstance(values, tuple):
-            return pathways_mod.score_pathway_bins(dataset, name, pathways, idx, binning, mask)
+            base = binning.base
+            scores = pathways_mod.score_pathway_bins(dataset, name, pathways, idx, base or binning, mask)
+            if base is None or scores is None:
+                return scores
+            per_cell = scores[base.cell_bin]
+            scored = np.isfinite(per_cell)
+            return binning.mean(per_cell, scored if mask is None else scored & mask)
         return binning.mean(values[idx], mask)
 
     def refresh_field_options(self, changed_field: str, select: bool = False):
@@ -595,9 +604,10 @@ class ColorControls:
             return self._field_colors(dataset, idx, binning)
         return self._expression_colors(dataset, idx, binning, self._expression(dataset, idx, binning), histograms)
 
-    def render(self, idx: np.ndarray | None = None, binning=None, with_counts: bool = False):
-        """(compute_colors(idx, binning), *hover_data(idx, binning), has_counts(idx, binning)
-        if `with_counts` else None) - with the gene / pathway channels computed once for all."""
+    def render(self, idx: np.ndarray | None = None, binning=None, with_counts: bool = False,
+               histograms: bool = True):
+        """(compute_colors(idx, binning, histograms), *hover_data(idx, binning), has_counts(idx,
+        binning) if `with_counts` else None) - with the gene / pathway channels computed once for all."""
         dataset = self.get_dataset()
         if dataset is None:
             return self.compute_colors(idx, binning), *self.hover_data(idx, binning), None
@@ -605,7 +615,7 @@ class ColorControls:
             return (self.compute_colors(idx, binning), *self.hover_data(idx, binning),
                     self.has_counts(idx, binning) if with_counts else None)
         ex = self._expression(dataset, idx, binning)
-        return (self._expression_colors(dataset, idx, binning, ex, True),
+        return (self._expression_colors(dataset, idx, binning, ex, histograms),
                 *self._expression_hover(binning, ex),
                 self.has_counts(idx, binning, ex) if with_counts else None)
 
@@ -841,8 +851,11 @@ class ColorControls:
         generation = self._hist_generation
         dataset = self.get_dataset()
         width = self.get_hex_width()
-        # (The drawn sample's binning is made already; the others' aren't built here.)
-        others = [sid for sid in dataset.sample_ids if width is not None and not (
+        # (The drawn sample's binning is made already; the others' aren't built here.) The
+        # samples side by side are every sample already.
+        all_drawn = (width is not None and dataset.has_hex_binning(ALL_SAMPLES, width)
+                     and dataset.hex_binning(ALL_SAMPLES, width) is binning)
+        others = [] if all_drawn else [sid for sid in dataset.sample_ids if width is not None and not (
             dataset.has_hex_binning(sid, width) and dataset.hex_binning(sid, width) is binning)]
         # Other samples' bins only change with the gene / pathway, width and selected
         # categories, so they're cached rather than rebuilt on every recolor.

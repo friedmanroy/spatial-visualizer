@@ -18,6 +18,7 @@ from anndata.io import read_elem
 from . import clustering
 from . import fields as fields_mod
 from . import hexbin
+from . import sample_grid
 from . import seurat
 from . import spatial_plot
 
@@ -32,6 +33,9 @@ _TOP_K_BUDGET = 16_000_000
 _HVG_SAMPLE = 100_000
 #: gene sets' per-bin scores kept (each a float per bin of one sample)
 _GENE_SET_CACHE_SIZE = 64
+#: the sample name of every sample laid out side by side (sample_grid), in the Spatial tab's
+#: sample picker; it isn't one of Dataset.sample_ids, so nothing run per sample includes it
+ALL_SAMPLES = "All samples (side by side)"
 #: the obsm entries the viewer reads; loading leaves the others out of memory
 _OBSM_USED = ("spatial", "spatial_original")
 
@@ -137,6 +141,10 @@ class Dataset:
         self._lattice_cache: dict[str, spatial_plot.Lattice] = {}
         self._binning_cache: dict[tuple[str, float], hexbin.HexBinning] = {}
         self._binning_lock = threading.RLock()  # binnings are slow and big: never two at once
+        # (sample, width) -> the display levels made over that binning (hexbin.hex_levels)
+        self._level_cache: dict[tuple[str, float], list[hexbin.HexBinning]] = {}
+        self._grid: sample_grid.SampleGrid | None = None  # the samples side by side (sample_grid)
+        self._grid_indices: np.ndarray | None = None  # their cells, in the grid's order
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
         self._count_cache: dict[str, np.ndarray] = {}  # genes' columns of self.counts
@@ -148,6 +156,9 @@ class Dataset:
         # Hexagon width (cell spacings) Leiden and cell typing run on, chosen on the load
         # page for samples too large to analyse spot by spot; None = on the cells themselves.
         self.analysis_width: float | None = None
+        # How many spots the load page pooled the hexagons standing in for them from
+        # (prepool), or None if the file's own spots are shown.
+        self.pooled_from: int | None = None
         self._var_upper_lookup: dict[str, str] | None = None
         self._variable_ranking: np.ndarray | None = None  # var indices, most variable first
         self._top_genes_cache: dict[tuple, np.ndarray] = {}
@@ -235,13 +246,43 @@ class Dataset:
                 indices = dict(zip(sample_ids, groups))
             self._lattice_cache = {}
             self._binning_cache = {}
+            self._grid = self._grid_indices = None
             self.sample_col, self.sample_ids, self._sample_indices = colname, sample_ids, indices
 
     def sample_indices(self, sample_id: str) -> np.ndarray:
+        if sample_id == ALL_SAMPLES:
+            with self.split_lock:
+                if self._grid_indices is None:
+                    self._grid_indices = np.concatenate([self._sample_indices[s] for s in self.sample_ids])
+                return self._grid_indices
         return self._sample_indices[sample_id]
 
     def sample_coords(self, sample_id: str) -> np.ndarray:
+        if sample_id == ALL_SAMPLES:
+            return self.sample_grid().coords
         return self.adata.obsm["spatial"][self.sample_indices(sample_id)]
+
+    def sample_grid(self) -> sample_grid.SampleGrid:
+        """Every sample's cells laid out side by side (ALL_SAMPLES), moved by whole steps of
+        the analysis hexagons' lattice so the hexagons over them match each sample's own."""
+        with self.split_lock:
+            if self._grid is None:
+                largest = self.largest_sample()
+                factor = self.analysis_width or self.default_hex_factor()
+                self._grid = sample_grid.layout([(s, self.sample_coords(s)) for s in self.sample_ids],
+                                                factor * self.sample_lattice(largest).spacing)
+            return self._grid
+
+    def forget_sample_geometry(self, sample_id: str):
+        """Drops whatever was measured on a sample's positions (they just changed), and
+        the side-by-side layout, which they're part of."""
+        with self.split_lock:
+            with self._binning_lock:
+                for sid in (sample_id, ALL_SAMPLES):
+                    self._lattice_cache.pop(sid, None)
+                    for key in [k for k in self._binning_cache if k[0] == sid]:
+                        del self._binning_cache[key]
+                self._grid = None
 
     def largest_sample_size(self) -> int:
         return max(len(idx) for idx in self._sample_indices.values())
@@ -263,6 +304,8 @@ class Dataset:
         return hexbin.default_width_factor(self.sample_extent(largest), self.sample_lattice(largest).spacing)
 
     def sample_lattice(self, sample_id: str) -> spatial_plot.Lattice:
+        if sample_id == ALL_SAMPLES:  # the samples' cells, only moved: the largest one's spacing
+            return self.sample_lattice(self.largest_sample())
         if sample_id not in self._lattice_cache:
             self._lattice_cache[sample_id] = spatial_plot.estimate_lattice(self.sample_coords(sample_id))
         return self._lattice_cache[sample_id]
@@ -282,6 +325,20 @@ class Dataset:
                 width = width_factor * self.sample_lattice(sample_id).spacing
                 self._binning_cache[key] = hexbin.make_hex_binning(self.sample_coords(sample_id), width)
             return self._binning_cache[key]
+
+    def hex_levels(self, sample_id: str, width_factor: float, max_bins: int) -> list[hexbin.HexBinning]:
+        """The sample's hexagons `width_factor` cell spacings wide (hex_binning: the ones
+        analysed) and coarser display levels above them, each twice as wide, the last with
+        at most `max_bins` bins - finest first."""
+        base = self.hex_binning(sample_id, width_factor)
+        key = (sample_id, width_factor)
+        with self._binning_lock:
+            # Levels over binnings evicted (or remade after an alignment) are let go.
+            for old in [k for k in self._level_cache if k not in self._binning_cache]:
+                del self._level_cache[old]
+            levels = hexbin.hex_levels(base, max_bins, self._level_cache.get(key))
+            self._level_cache[key] = levels
+            return levels
 
     def has_hex_binning(self, sample_id: str, width_factor: float) -> bool:
         """Whether hex_binning would answer right away."""
@@ -309,7 +366,12 @@ class Dataset:
 
     def kept_bins(self, idx: np.ndarray, binning, hex_filter: hexbin.HexFilter | None = None) -> np.ndarray:
         """Boolean mask over `binning`'s bins (of the sample's cells `idx`): those `hex_filter`
-        (by default self.hex_filter) analyses."""
+        (by default self.hex_filter) analyses - for a coarser display level, those holding
+        any analysed hexagon."""
+        if getattr(binning, "base", None) is not None:
+            base = binning.base
+            kept_cells = self.kept_bins(idx, base, hex_filter)[base.cell_bin]
+            return binning.sum(kept_cells.astype(float)) > 0
         totals = self.cell_totals()
         return (hex_filter or self.hex_filter).keep(binning, None if totals is None else binning.sum(totals[idx]))
 
@@ -556,3 +618,7 @@ class AppState:
         self.alignment_listeners: list = []
         # Called with no arguments after a tissue image was loaded into uns['spatial'].
         self.image_listeners: list = []
+        # () -> None: builds the viewer's tabs anew, on state.spatial (set by the app).
+        self.rebuild_viewer = None
+        # The sample the Spatial tab opens on, if not the first (e.g. one just added).
+        self.start_sample: str | None = None

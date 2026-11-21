@@ -18,6 +18,11 @@ import scipy.sparse as sp
 BINNING_THRESHOLD = 1_000_000
 #: the automatic hexagon width tiles the largest sample's bounding rectangle with about this many hexagons
 DEFAULT_HEXAGONS = 50_000
+#: the Spatial view draws at most about this many objects (hexagons or cells) in view by default
+#: - hexagon levels each twice as wide as the last are added until the coarsest has no more
+DEFAULT_VIEW_BUDGET = 100_000
+#: a sample's hexagons get at most this many levels (the first: the analysis hexagons)
+MAX_LEVELS = 12
 #: hexagons with fewer spots than this fraction of their sample's median have too little data
 #: to analyse (a tile's rim, fiducial marks); low counts alone can be real tissue (white matter)
 DEFAULT_MIN_COVERAGE = 0.5
@@ -59,6 +64,9 @@ class HexBinning:
     counts: np.ndarray  # number of cells in each bin
     width: float  # flat-to-flat width of a bin
     mean_matrix: sp.csr_matrix  # (n_bins, n_cells): mean_matrix @ values = per-bin mean
+    # For a coarser display level (coarser_binning): the analysis hexagons it pools, each
+    # whole in one of its bins; None for the analysis hexagons themselves.
+    base: "HexBinning | None" = None
 
     @property
     def n_bins(self) -> int:
@@ -171,11 +179,43 @@ def width_note(extent: tuple[float, float], spacing: float, factor: float | None
 def make_hex_binning(coords: np.ndarray, width: float) -> HexBinning:
     """Assigns every cell to the pointy-top hexagon (flat-to-flat `width`) containing it."""
     cell_bin, counts, centers = hex_cells(coords, width)
+    return _binning(cell_bin, counts, centers, width)
+
+
+def coarser_binning(fine: HexBinning, base: HexBinning) -> HexBinning:
+    """The next display level up from `fine`: hexagons twice as wide, each pooling the
+    `fine` hexagons whose centers it holds (so every analysis hexagon of `base` lies whole
+    in one of them, and a bin's cells are exactly its fine bins' cells)."""
+    width = 2 * fine.width
+    fine_bin, _, centers = hex_cells(fine.centers, width)
+    cell_bin = fine_bin[fine.cell_bin]
+    return _binning(cell_bin, np.bincount(cell_bin, minlength=len(centers)), centers, width, base)
+
+
+def hex_levels(base: HexBinning, max_bins: int, levels: list[HexBinning] | None = None) -> list[HexBinning]:
+    """`base` (the analysis hexagons) and coarser_binning levels above it, each twice as wide
+    as the last, until one has at most `max_bins` bins (or MAX_LEVELS are made). `levels`:
+    ones made before from the same `base`, extended as needed, then cut at the first level
+    small enough."""
+    levels = list(levels) if levels and levels[0] is base else [base]
+    for i, level in enumerate(levels):
+        if level.n_bins <= max_bins:
+            return levels[:i + 1]
+    while levels[-1].n_bins > max_bins and len(levels) < MAX_LEVELS:
+        coarser = coarser_binning(levels[-1], base)
+        if coarser.n_bins >= levels[-1].n_bins:  # can't pool any further (one bin per cell left)
+            break
+        levels.append(coarser)
+    return levels
+
+
+def _binning(cell_bin: np.ndarray, counts: np.ndarray, centers: np.ndarray, width: float,
+             base: HexBinning | None = None) -> HexBinning:
     mean_matrix = sp.csr_matrix(
         (1.0 / counts[cell_bin], (cell_bin, np.arange(len(cell_bin)))),
         shape=(len(counts), len(cell_bin)),
     )
-    return HexBinning(centers, cell_bin, counts, width, mean_matrix)
+    return HexBinning(centers, cell_bin, counts, width, mean_matrix, base)
 
 
 def hex_cells(coords: np.ndarray, width: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

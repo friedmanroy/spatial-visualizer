@@ -357,6 +357,7 @@ def build_landing(state, on_ready) -> pn.viewable.Viewable:
         many spots its hexagons were pooled from, if they were)."""
         ds = Dataset(adata, name=os.path.basename(path))
         ds.color_cache = ColorCache(path)
+        ds.pooled_from = pooled_from
         normalize_checkbox.disabled = False
         typing.guess_species(adata.var_names)
         state.gene_filter.set_genes(adata.var_names)
