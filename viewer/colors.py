@@ -123,7 +123,9 @@ CHANNEL_VECTORS = {
 }
 
 
-def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool]]) -> np.ndarray:
+def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool]],
+                       ranges: dict[str, tuple[float, float] | None] | None = None,
+                       used: dict | None = None) -> np.ndarray:
     """Blend up to three channels ('R', 'G', 'B') of per-cell values into packed colors.
 
     ``channels`` maps a channel label to (values, bipolar). ``values`` is a length-n
@@ -132,6 +134,13 @@ def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool
     to the 99th percentile of the values above it (e.g. gene expression) - so a gene
     expressed in under 1% of the cells still shows, instead of its 1st and 99th
     percentiles both being 0.
+
+    ``ranges`` (per label: (low, high), or None for the automatic range above) sets the
+    values a channel's colors run between instead - e.g. a lower top for heavy-tailed
+    values. For bipolar values a range across 0 gives the color above 0 (brightest at
+    high) and the opposite color below (brightest at low); one entirely above 0 colors
+    only what's above low, and one below 0 only what's below high. ``used``, if given, gets
+    each drawn channel's (low, high).
     """
     rgb = np.zeros((n, 3))
     for label, (values, bipolar) in channels.items():
@@ -139,16 +148,32 @@ def compute_rgb_colors(n: int, channels: dict[str, tuple[np.ndarray | None, bool
             continue
         primary, complement = CHANNEL_VECTORS[label]
         values = np.nan_to_num(values.astype(float))
+        chosen = (ranges or {}).get(label)
         if bipolar:
-            absmax = max(float(np.max(np.abs(values))), 1e-9)
-            t = values / absmax
-            pos = np.clip(t, 0, 1)
-            neg = np.clip(-t, 0, 1)
+            if chosen is None:
+                absmax = max(float(np.max(np.abs(values))), 1e-9)
+                chosen = (-absmax, absmax)
+            low, high = chosen
+            if used is not None:
+                used[label] = (float(low), float(high))
+            span = max(high - low, 1e-12)
+            if low >= 0:  # only what's above low, in the channel's color
+                pos, neg = np.clip((values - low) / span, 0, 1), 0.0 * values
+            elif high <= 0:  # only what's below high, in the opposite color
+                pos, neg = 0.0 * values, np.clip((high - values) / span, 0, 1)
+            else:
+                pos = np.clip(values / max(high, 1e-12), 0, 1)
+                neg = np.clip(values / min(low, -1e-12), 0, 1)
             rgb += pos[:, None] * primary[None, :] + neg[:, None] * complement[None, :]
         else:
-            vmin = np.percentile(values, 1)
-            above = values[values > vmin]
-            vmax = np.percentile(above, 99) if above.size else vmin
+            if chosen is None:
+                vmin = np.percentile(values, 1)
+                above = values[values > vmin]
+                vmax = np.percentile(above, 99) if above.size else vmin
+            else:
+                vmin, vmax = chosen
+            if used is not None:
+                used[label] = (float(vmin), float(vmax))
             if vmax > vmin:
                 t = np.clip((values - vmin) / (vmax - vmin), 0, 1)
             else:

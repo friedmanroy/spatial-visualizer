@@ -12,6 +12,7 @@ import html
 import numpy as np
 import pandas as pd
 import panel as pn
+from bokeh.models import PrintfTickFormatter
 
 from . import background
 from . import colors as colors_mod
@@ -71,6 +72,14 @@ input[type="color"]::-webkit-color-swatch-wrapper {{ padding: 0; }}
 input[type="color"]::-webkit-color-swatch {{ border: none; border-radius: 3px; }}
 input[type="color"]::-moz-color-swatch {{ border: none; border-radius: 3px; }}
 """
+
+
+#: the color range slider is placed so its track spans the histogram's value axis
+#: (Bokeh's slider track is inset by about this much (px) from the widget's edges)
+_SLIDER_TRACK_INSET = 1
+_SLIDER_LEFT = _INSET + int(histogram_mod.AXIS_INSET_PX) - _SLIDER_TRACK_INSET
+_SLIDER_WIDTH = histogram_mod.WIDTH_PX - 2 * int(histogram_mod.AXIS_INSET_PX) + 2 * _SLIDER_TRACK_INSET
+
 
 
 def section_label(text: str) -> pn.pane.HTML:
@@ -186,9 +195,19 @@ class ColorControls:
                 description=f"Clear the {_CHANNEL_NAME[label].lower()} channel",
             )
             info_pane = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 5, 0, _INSET))
-            hist_pane = pn.pane.HTML("", visible=False, sizing_mode="stretch_width", margin=(0, 5, 0, _INSET))
+            # (Fixed width: the color range slider under it lines up with its value axis.)
+            hist_pane = pn.pane.HTML("", visible=False, width=histogram_mod.WIDTH_PX, margin=(0, 5, 0, _INSET))
+            # The values the channel's colors run between, on the histogram's axis: a lower
+            # top for genes / pathways whose few high values would leave everything else
+            # dim, or a bottom of 0 for pathway scores' values above it alone.
+            range_slider = pn.widgets.RangeSlider(
+                name="Color range", start=0.0, end=1.0, value=(0.0, 1.0), step=0.01, visible=False,
+                format=PrintfTickFormatter(format="%.3g"), bar_color=_CHANNEL_LABEL_COLOR[label],
+                width=_SLIDER_WIDTH, margin=(0, 5, 4, _SLIDER_LEFT),
+            )
             self.channel_widgets[label] = dict(
                 gene=gene_input, gene_dropdown=gene_dropdown, pathway=pathway_select, info=info_pane, hist=hist_pane,
+                range=range_slider, chosen_range=None,  # (low, high) the user set, else None: automatic
             )
             color = _CHANNEL_LABEL_COLOR[label]
             channel_label = pn.pane.HTML(
@@ -202,6 +221,7 @@ class ColorControls:
                            sizing_mode="stretch_width"),
                     gene_dropdown,
                     hist_pane,
+                    range_slider,
                     info_pane,
                     margin=(0, 0, 6, 0),
                     sizing_mode="stretch_width",
@@ -218,10 +238,14 @@ class ColorControls:
         self.select_all_btn.on_click(lambda e: self._set_all(True))
         self.deselect_all_btn.on_click(lambda e: self._set_all(False))
         for w in self.channel_widgets.values():
+            # A new gene / pathway starts at its own full range (watched first: before recoloring).
+            w["gene"].param.watch(lambda e, w=w: self._reset_range(w), "value")
+            w["pathway"].param.watch(lambda e, w=w: self._reset_range(w), "value")
             w["gene"].param.watch(self._fire, "value")
             w["gene"].param.watch(lambda e, w=w: self._sync_dropdown(w), "value")
             w["gene_dropdown"].param.watch(lambda e, w=w: self._on_dropdown_pick(w, e.new), "value")
             w["pathway"].param.watch(self._fire, "value")
+            w["range"].param.watch(lambda e, w=w: self._on_range_pick(w, e.new), "value_throttled")
 
         self.layout = pn.Column(
             section_label("Color cells by"),
@@ -413,6 +437,45 @@ class ColorControls:
         if dataset is not None and gene:
             matched = gene if self._field_column(dataset, gene) is not None else dataset.match_gene(gene)
         w["gene_dropdown"].value = matched if matched in w["gene_dropdown"].values else ""
+
+    def _reset_range(self, w: dict):
+        """Back to the automatic color range (a new gene / pathway has its own values)."""
+        w["chosen_range"] = None
+
+    def _on_range_pick(self, w: dict, value):
+        # A handle dropped next to 0 is put on it: 0 is where pathway scores change color,
+        # and hard to hit exactly by dragging.
+        near = 2 * w["range"].step
+        low, high = (0.0 if abs(v) <= near else float(v) for v in value)
+        w["chosen_range"] = (low, high)
+        if (low, high) != tuple(value):
+            w["range"].value = (low, high)
+        self._fire()
+
+    def _chosen_ranges(self) -> dict:
+        return {label: w["chosen_range"] for label, w in self.channel_widgets.items()}
+
+    @staticmethod
+    def _set_slider(slider, start: float, end: float, value, chosen: bool):
+        """The slider's bounds and handles at once: a range the user `chosen` widens the
+        bounds to fit, any other is cut to them. Setting them doesn't recolor: only
+        dragging does (value_throttled)."""
+        if end <= start:
+            end = start + 1.0
+        low, high = value
+        if chosen:
+            start, end = min(start, low), max(end, high)
+        else:
+            low, high = min(max(low, start), end), min(max(high, start), end)
+        slider.param.update(start=start, end=end, step=(end - start) / 200, value=(low, high))
+
+    def _show_ranges(self, used: dict):
+        """Each channel's slider handles at the range it's colored over (the automatic one
+        unless the user picked one)."""
+        for label, w in self.channel_widgets.items():
+            if label in used:
+                slider = w["range"]
+                self._set_slider(slider, slider.start, slider.end, used[label], w["chosen_range"] is not None)
 
     def _clear_channel(self, label: str):
         with pn.io.hold():
@@ -721,15 +784,19 @@ class ColorControls:
             if histograms:
                 self._update_histograms(ex["raw"], mask)
             shown = cell_mask
+        ranges, used = self._chosen_ranges(), {}
         if shown is None:
-            return colors_mod.compute_rgb_colors(n, channels)
-        # Scale colors over the shown cells/bins only, so the contrast reflects them.
-        colors = np.full(n, colors_mod.GRAY_RGBA, dtype=np.uint32)
-        if shown.any():
-            colors[shown] = colors_mod.compute_rgb_colors(int(shown.sum()), {
-                label: (None if values is None else values[shown], bipolar)
-                for label, (values, bipolar) in channels.items()
-            })
+            colors = colors_mod.compute_rgb_colors(n, channels, ranges, used)
+        else:
+            # Scale colors over the shown cells/bins only, so the contrast reflects them.
+            colors = np.full(n, colors_mod.GRAY_RGBA, dtype=np.uint32)
+            if shown.any():
+                colors[shown] = colors_mod.compute_rgb_colors(int(shown.sum()), {
+                    label: (None if values is None else values[shown], bipolar)
+                    for label, (values, bipolar) in channels.items()
+                }, ranges, used)
+        if histograms:  # (the main drawing, not the zoomed-in layer)
+            self._show_ranges(used)
         return colors
 
     def hover_data(self, idx: np.ndarray | None = None, binning=None) -> tuple[dict, dict]:
@@ -923,11 +990,16 @@ class ColorControls:
     def _show_histogram(self, label: str, local_values, global_values, shown: str, overall: str | None = None):
         """Draws a channel's histogram (hidden if `local_values` is None), captioned with
         what `local_values` are and, when overlaid, what `global_values` are."""
-        hist_pane = self.channel_widgets[label]["hist"]
+        w = self.channel_widgets[label]
+        hist_pane, slider = w["hist"], w["range"]
         if local_values is None:
             hist_pane.object = ""
-            hist_pane.visible = False
+            hist_pane.visible = slider.visible = False
             return
+        start, end = histogram_mod.value_bounds(local_values, global_values)
+        chosen = w["chosen_range"]
+        self._set_slider(slider, start, end, chosen or slider.value, chosen is not None)
+        slider.visible = True
         color = _CHANNEL_LABEL_COLOR[label]
         caption = (shown if overall is None else
                    f'<span style="color:{color}">■</span> {shown} &nbsp; '

@@ -16,6 +16,8 @@ import numpy as np
 
 WIDTH_PX = 280
 HEIGHT_PX = 46
+#: the value axis runs from this far (px) from the histogram's left edge to as far from its right
+AXIS_INSET_PX = 8.0
 _TOTALS_HEIGHT_PX = 70
 
 
@@ -54,13 +56,7 @@ def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None,
     if global_values is not None:
         global_values = np.asarray(global_values, dtype=float)
         global_values = global_values[np.isfinite(global_values)]
-        lo = min(local_values.min(), global_values.min()) if global_values.size else local_values.min()
-        hi = max(local_values.max(), global_values.max()) if global_values.size else local_values.max()
-    else:
-        lo, hi = local_values.min(), local_values.max()
-    lo, hi = float(lo), float(hi)
-    if hi <= lo:
-        hi = lo + 1.0
+    lo, hi = value_bounds(local_values, global_values)
     bin_edges = np.linspace(lo, hi, 31)
     series = []
     if global_values is not None and global_values.size:
@@ -69,7 +65,7 @@ def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None,
     top = max(float(h.max()) for h, _, _ in series) or 1.0
 
     w, h = WIDTH_PX, HEIGHT_PX
-    x0, x1, y_top, y_axis = 8.0, w - 8.0, 2.0, h - 15.0
+    x0, x1, y_top, y_axis = AXIS_INSET_PX, w - AXIS_INSET_PX, 2.0, h - 15.0
     sx = lambda v: x0 + (v - lo) / (hi - lo) * (x1 - x0)
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}">']
     for heights, fill, alpha in series:
@@ -95,6 +91,20 @@ def render_histogram(local_values: np.ndarray, global_values: np.ndarray | None,
     parts.append("</svg>")
     b64 = base64.b64encode("".join(parts).encode()).decode()
     return f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%;height:{h}px;display:block" />'
+
+
+def value_bounds(local_values: np.ndarray, global_values: np.ndarray | None = None) -> tuple[float, float]:
+    """(lowest, highest) value on render_histogram's axis: the finite values' range."""
+    local_values = np.asarray(local_values, dtype=float)
+    parts = [local_values[np.isfinite(local_values)]]
+    if global_values is not None:
+        global_values = np.asarray(global_values, dtype=float)
+        parts.append(global_values[np.isfinite(global_values)])
+    values = np.concatenate(parts)
+    if values.size == 0:
+        return 0.0, 1.0
+    lo, hi = float(values.min()), float(values.max())
+    return (lo, hi) if hi > lo else (lo, lo + 1.0)
 
 
 def _decimals(step: float) -> int:
