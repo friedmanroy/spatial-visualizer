@@ -144,6 +144,7 @@ class Dataset:
         # (sample, width) -> the display levels made over that binning (hexbin.hex_levels)
         self._level_cache: dict[tuple[str, float], list[hexbin.HexBinning]] = {}
         self._grid: sample_grid.SampleGrid | None = None  # the samples side by side (sample_grid)
+        self._grid_cols: int | None = None  # its number of columns (fits the plot's shape)
         self._grid_indices: np.ndarray | None = None  # their cells, in the grid's order
         self._field_cache: dict[str, fields_mod.FieldSpec] = {}
         self._gene_cache: dict[str, np.ndarray] = {}
@@ -270,8 +271,23 @@ class Dataset:
                 largest = self.largest_sample()
                 factor = self.analysis_width or self.default_hex_factor()
                 self._grid = sample_grid.layout([(s, self.sample_coords(s)) for s in self.sample_ids],
-                                                factor * self.sample_lattice(largest).spacing)
+                                                factor * self.sample_lattice(largest).spacing,
+                                                n_cols=self._grid_cols)
             return self._grid
+
+    def fit_grid_to(self, aspect: float | None) -> bool:
+        """Picks the side-by-side layout's number of columns for a plot of this width /
+        height; whether that changed the layout (dropping what was measured on it)."""
+        with self.split_lock:
+            _, sizes = sample_grid.extents([(s, self.sample_coords(s)) for s in self.sample_ids])
+            cols = sample_grid.best_columns(sizes, aspect)
+            if cols == self._grid_cols:
+                return False
+            self._grid_cols = cols
+            if self._grid is None or self._grid.n_cols == cols:
+                return False
+        self.forget_sample_geometry(ALL_SAMPLES)
+        return True
 
     def forget_sample_geometry(self, sample_id: str):
         """Drops whatever was measured on a sample's positions (they just changed), and

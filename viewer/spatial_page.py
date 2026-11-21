@@ -983,14 +983,48 @@ def build_spatial_page(state) -> pn.viewable.Viewable:
             return
         (x0, y0), (x1, y1) = coords.min(axis=0), coords.max(axis=0)
         if sample_id == ALL_SAMPLES:
-            y0 -= dataset.sample_grid().pad  # the name band above the first row
+            y0 -= dataset.sample_grid().band  # the name band above the first row
         mx, my = (x1 - x0) * 0.05 or 1.0, (y1 - y0) * 0.05 or 1.0
         fig.x_range.update(start=float(x0 - mx), end=float(x1 + mx))
         # The y axis points down (y_range.flipped): its range runs from the bottom up.
         fig.y_range.update(start=float(y1 + my), end=float(y0 - my))
 
+    def refit_grid() -> bool:
+        """Lays all samples out in as many columns as suit the plot's shape; whether
+        the layout changed."""
+        w, h = (getattr(fig, n, None) for n in ("inner_width", "inner_height"))
+        if dataset.fit_grid_to(w / h if w and h else None):
+            geom_cache.pop(ALL_SAMPLES, None)
+            return True
+        return False
+
+    grid_resize = {"timer": None}
+
+    async def relayout_grid():
+        grid_resize["timer"] = None
+        if sample_select.value != ALL_SAMPLES or not refit_grid():
+            return
+        async with busy_if_slow(ALL_SAMPLES, "Laying the samples out again..."):
+            with pn.io.hold():
+                fit_view(ALL_SAMPLES)
+                regions_panel.refresh()
+                redraw_full(ALL_SAMPLES)
+
+    def on_plot_resize(attr, old, new):
+        # Waits for the resize to settle: the plot reports every step of it.
+        doc = fig.document or pn.state.curdoc
+        if grid_resize["timer"] is not None:
+            with contextlib.suppress(ValueError):
+                doc.remove_timeout_callback(grid_resize["timer"])
+        grid_resize["timer"] = doc.add_timeout_callback(relayout_grid, 500)
+
+    fig.on_change("inner_width", on_plot_resize)
+    fig.on_change("inner_height", on_plot_resize)
+
     async def on_sample_change(event):
         sample_select.name = _sample_label(event.new, dataset.sample_ids)
+        if event.new == ALL_SAMPLES:
+            refit_grid()
         if event.new != ALL_SAMPLES:
             last_single["sample"] = event.new
         show_all_btn.name = SHOW_ONE if event.new == ALL_SAMPLES else SHOW_ALL
@@ -1240,7 +1274,7 @@ const xr = fig.x_range, yr = fig.y_range;
 const sx = fig.inner_width / Math.abs(xr.end - xr.start);
 const sy = fig.inner_height / Math.abs(yr.end - yr.start);
 if (!isFinite(sx) || !isFinite(sy) || sx <= 0 || sy <= 0) return;
-let px = Math.min(16, 0.7 * d.pad[0] * sy);
+let px = Math.min(28, 0.6 * d.band[0] * sy);
 for (let i = 0; i < d.text.length; i++)
     px = Math.min(px, d.room[i] * sx / (0.6 * Math.max(1, d.text[i].length)));
 glyph.text_font_size = {value: (px >= 5 ? px.toFixed(1) : 0) + 'px'};
@@ -1334,11 +1368,11 @@ def _add_hint(dataset) -> str:
 
 
 def _empty_labels() -> dict:
-    return {"x": [], "y": [], "text": [], "room": [], "pad": []}
+    return {"x": [], "y": [], "text": [], "room": [], "band": []}
 
 
 def _grid_labels(grid) -> dict:
     """label_source data naming each sample above it (sample_grid.SampleGrid.labels)."""
     names, xs, ys, rooms = zip(*grid.labels) if grid.labels else ((), (), (), ())
     return {"x": list(xs), "y": list(ys), "text": list(names), "room": list(rooms),
-            "pad": [grid.pad] * len(names)}
+            "band": [grid.band] * len(names)}
